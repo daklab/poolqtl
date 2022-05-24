@@ -1,22 +1,22 @@
 ---
-title: "R Notebook"
-output: html_notebook
+title: "3_logistic_regression_enrich"
+output:
+  html_document:
+    theme: null # this makes the html nice and small
 ---
 
 ```{r}
-require(tidyverse)
 require(tidyverse)
 
 overlap = read_tsv("../results/overlap.tsv.gz") %>% filter(!is.na(pip))
 overlap
 ```
+
 ```{r}
 glm_fit = glm( I(pip>0.1) ~ asb + exonic + in_peak + genic, family=binomial, data = overlap)
 summary_marg = summary(glm_fit)
 summary_marg
 ```
-# (Intercept)      asbTRUE       exonic      in_peak        genic  
-# -5.1865       0.8847       0.9017       0.5570       0.6196   
 
 ```{r}
 glm_interact = glm( I(pip>0.1) ~  asb * in_peak + exonic + genic, family=binomial, data = overlap)
@@ -33,7 +33,7 @@ weighted_summary = summary(weighted_glm)
 weighted_summary
 ```
 
-```{r}
+```{r fig.width=6, fig.height=3}
 weighted_coefs = coef(weighted_summary)
 colnames(weighted_coefs)[2] = "se"
 to_plot = as_tibble(weighted_coefs) %>% mutate(feature = rownames(weighted_coefs)) %>% filter(feature != "(Intercept)")
