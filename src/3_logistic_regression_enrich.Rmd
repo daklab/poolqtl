@@ -1,8 +1,10 @@
 ---
 title: "3_logistic_regression_enrich"
-output:
-  html_document:
-    theme: null # this makes the html nice and small
+output: html_notebook
+#rmarkdown::github_document
+#html_document:
+#theme: null # this makes the html nice and small
+  
 ---
 
 ```{r}
