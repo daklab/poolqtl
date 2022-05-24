@@ -1,0 +1,47 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+require(tidyverse)
+require(tidyverse)
+
+overlap = read_tsv("../results/overlap.tsv.gz") %>% filter(!is.na(pip))
+overlap
+```
+```{r}
+glm_fit = glm( I(pip>0.1) ~ asb + exonic + in_peak + genic, family=binomial, data = overlap)
+summary_marg = summary(glm_fit)
+summary_marg
+```
+# (Intercept)      asbTRUE       exonic      in_peak        genic  
+# -5.1865       0.8847       0.9017       0.5570       0.6196   
+
+```{r}
+glm_interact = glm( I(pip>0.1) ~  asb * in_peak + exonic + genic, family=binomial, data = overlap)
+summary_interact = summary(glm_interact)
+summary_interact
+```
+
+# weighted regression
+
+```{r}
+expanded_dat = rbind( overlap %>% mutate( y = 1, w = pip ), overlap %>% mutate( y = 0, w = 1-pip ) )
+weighted_glm = glm( y ~  asb + in_peak + exonic + genic, family=binomial, data = expanded_dat, weights = w)
+weighted_summary = summary(weighted_glm)
+weighted_summary
+```
+
+```{r}
+weighted_coefs = coef(weighted_summary)
+colnames(weighted_coefs)[2] = "se"
+to_plot = as_tibble(weighted_coefs) %>% mutate(feature = rownames(weighted_coefs)) %>% filter(feature != "(Intercept)")
+levels = c("asbTRUE", "in_peak", "exonic",  "genic")
+labels = c("ASB QTL", "Binding peak", "Exonic", "Genic")
+to_plot %>% 
+    mutate(feature = factor(feature, levels, labels)) %>% 
+    ggplot(aes(feature, y= Estimate,  ymin = Estimate - se, ymax = Estimate + se)) + geom_point() + geom_errorbar() + coord_flip() + xlab(NULL) + expand_limits(y=0) + ylab("Logistic regression coefficient")
+```
+
+

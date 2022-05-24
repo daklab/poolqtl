@@ -89,11 +89,11 @@ genes_tree = interval_utils.to_interval_trees(genes, chroms)
 
 overlap["genic"] = interval_utils.get_overlap(genes_tree, overlap)
 
+overlap.to_csv("/gpfs/commons/home/daknowles/pooledRBPs/results/overlap.tsv.gz", sep = "\t", index = False)
+
 import statsmodels.api as sm
 
 overlap["asb"] = overlap.clean_q < 0.1
 X = overlap.loc[:,["asb","in_peak","exonic","genic"]].to_numpy(dtype=float)
 log_reg = sm.Logit(overlap.pip > 0.1, X).fit()
-
-overlap.to_csv("/gpfs/commons/home/daknowles/pooledRBPs/results/overlap.tsv.gz", sep = "\t", index = False)
 
