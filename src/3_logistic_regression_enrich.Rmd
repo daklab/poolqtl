@@ -46,4 +46,62 @@ to_plot %>%
     ggplot(aes(feature, y= Estimate,  ymin = Estimate - se, ymax = Estimate + se)) + geom_point() + geom_errorbar() + coord_flip() + xlab(NULL) + expand_limits(y=0) + ylab("Logistic regression coefficient")
 ```
 
+## Compare to seqweaver delta scores
 
+Load SNPs
+```{r}
+basedir = "/gpfs/commons/groups/knowles_lab/data/seqweaver/Seqweaver_RBP_gnomAD/"
+gnomad_vcf = read_tsv(paste0(basedir,"gnomad.r2.1.sites.Seqweaver.vcf.gz"), col_types = c(`#CHROM` = "c"))
+table(gnomad_vcf$`#CHROM`)
+```
+Load delta scores
+```{r}
+require(foreach)
+f = fs[1]
+seqw = foreach(chrom = 1:22, .combine = bind_rows) %do% { 
+    chrom_dat = gnomad_vcf %>% filter(`#CHROM` == chrom)
+    for(cell_type in c("HepG2", "K562")) {
+        for (rep in 1:2) {
+            chrom_dat[paste(cell_type, rep, sep="_")] = read_tsv(paste0(basedir, "hnrnpk_", cell_type, "_eCLIP.rep", rep, ".hg19.gnomad.r2.1.pred.",chrom,".txt.gz"), col_names = "delta")$delta
+        }
+    }
+    chrom_dat
+} %>% mutate(av = ( HepG2_1+HepG2_2+K562_1+K562_2)/4. )
+#cor(as.matrix(seqw[,6:9]))
+```
+All delta scores are positive :( 
+
+Join to overlap data
+```{r}
+joined = overlap %>% inner_join(seqw %>% select(rsid = ID, av), by = "rsid") # 910092 rows
+#joined_ =  overlap %>% inner_join(seqw %>% mutate(`#CHROM` = paste0("chr",`#CHROM`)) %>% 
+#                                      select(chrom = `#CHROM`, position_hg19 = POS, av), by = c("chrom","position_hg19")) # 910092, very similiar
+```
+
+Correlate ASB estimate and delta score
+```{r}
+cor.test(joined$asb_mean^2, joined$av, method = "spearman") # rho=0.013, p=2e-7
+```
+
+Correlate significance (q-value) and delta score
+```{r}
+ct = cor.test(joined$q, joined$av, method = "spearman") # rho=-0.031, p=2e-16
+ct$p.value
+```
+
+Weighted logistic regression using binary ASB feature
+```{r}
+expanded_dat = rbind( joined %>% mutate( y = 1, w = pip ), joined %>% mutate( y = 0, w = 1-pip ) )
+weighted_glm = glm( y ~  asb + in_peak + exonic + genic, family=binomial, data = expanded_dat, weights = w)
+weighted_summary = summary(weighted_glm)
+weighted_summary # asb z=7, p=2e-12
+```
+
+Weighted logistic regression using seqweaver delta score
+
+```{r}
+expanded_dat = rbind( joined %>% mutate( y = 1, w = pip ), joined %>% mutate( y = 0, w = 1-pip ) )
+weighted_glm = glm( y ~  av + in_peak + exonic + genic, family=binomial, data = expanded_dat, weights = w)
+weighted_summary = summary(weighted_glm)
+weighted_summary # av z=4.8, p=1e-6
+```
