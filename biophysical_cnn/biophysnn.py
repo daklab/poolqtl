@@ -10,17 +10,30 @@ import seq_utils
 import timeit
 
 import sklearn.metrics
-
+import os
 import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import logomaker
+
+def plot_motifs(pwms):
+    pwms_norm = pwms - pwms.mean(1,keepdims=True) 
+    nMotif = pwms_norm.shape[0]
+    plt.figure(figsize=(4,nMotif))
+    for i in range(nMotif): 
+        ax = plt.subplot(nMotif,1,i+1)
+        plt.axis('off')
+        pwm_df = pd.DataFrame(data = pwms_norm[i,:,:].t().numpy(), columns=("A","C","G","T"))
+        crp_logo = logomaker.Logo(pwm_df, ax=ax) 
 
 # positive example: binding of protein onto sequence (ChIP-seq (TF ChIP-seq))
 # negative example: the ones that do not overlap with the positive examples 
 # for chip-seq data: also shuffling nucleotides can be done to keep the GC content the same as positive example
 # because sequencing has biases with GC content and this would be a way to "fix it"
-class BedPeaksDataset(torch.utils.data.IterableDataset):
+class BedPeaksIterableDataset(torch.utils.data.IterableDataset):
 
     def __init__(self, atac_data, genome, context_length, rna = True):
-        super(BedPeaksDataset, self).__init__()
+        super().__init__()
         self.context_length = context_length
         self.atac_data = atac_data
         self.genome = genome
@@ -44,7 +57,80 @@ class BedPeaksDataset(torch.utils.data.IterableDataset):
             prev_chrom = row.chrom
             prev_end = row.end
 
-            
+class BedPeaksDataset(torch.utils.data.Dataset):
+
+    def __init__(self, 
+                 data, 
+                 genome, 
+                 context_length, 
+                 rna = True, 
+                 score_threshold = 0.):
+        super().__init__()
+        self.context_length = context_length
+        self.data = data
+        self.genome = genome
+        self.rna = rna
+        self.score_threshold = score_threshold
+        
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx): 
+        y = self.data.score.iloc[idx] > self.score_threshold
+        end = self.data.end.iloc[idx]
+        start = self.data.start.iloc[idx]
+        width = end - start
+        if (width < self.context_length) or y: # always take mid point for positives
+            midpoint = int(.5 * (start + end))
+            left = midpoint - self.context_length//2
+            right = midpoint + self.context_length//2
+        else: 
+            left = start if (width == self.context_length) else np.random.randint(
+                start, end - self.context_length)
+            right = left + self.context_length
+        seq = self.genome[self.data.chrom.iloc[idx]][left:right]
+        if self.rna and self.data.strand.iloc[idx] == "-": seq = seq_utils.reverse_complement(seq)
+        return(seq_utils.one_hot(seq), np.float32(y)) 
+    
+class FastBedPeaksDataset(torch.utils.data.Dataset):
+
+    def __init__(self, 
+                 data, 
+                 genome, 
+                 context_length, 
+                 rna = True, 
+                 score_threshold = 0.):
+        super().__init__()
+        self.context_length = context_length
+        self.genome = genome
+        self.rna = rna
+        self.score_threshold = score_threshold
+        self.start = data.start.to_numpy()
+        self.end = data.end.to_numpy()
+        self.chrom = data.chrom.to_numpy()
+        self.score = data.score.to_numpy()
+        self.strand = data.strand.to_numpy()
+        
+    def __len__(self):
+        return len(self.start)
+    
+    def __getitem__(self, idx): 
+        y = self.score[idx] > self.score_threshold
+        end = self.end[idx]
+        start = self.start[idx]
+        width = end - start
+        if (width < self.context_length) or y: # always take mid point for positives
+            midpoint = int(.5 * (start + end))
+            left = midpoint - self.context_length//2
+            right = midpoint + self.context_length//2
+        else: 
+            left = start if (width == self.context_length) else np.random.randint(
+                start, end - self.context_length)
+            right = left + self.context_length
+        seq = self.genome[self.chrom[idx]][left:right]
+        if self.rna and self.strand[idx] == "-": seq = seq_utils.reverse_complement(seq)
+        return(seq_utils.one_hot(seq), np.float32(y)) 
+
 class ExpandCoupled(nn.Module):
     
     def forward(self, input):
@@ -197,6 +283,7 @@ class PhysNet(nn.Module):
     
     
 class FinePhysNet(nn.Module): 
+    """Model to FINEtune PWMs, although can also be given randomly initialized PWMs"""
 
     def __init__(self, 
                  known_pwm,
@@ -279,17 +366,23 @@ def train_model(cnn_1d,
                 epochs=100, 
                 patience=10, 
                 verbose = True,
+                num_workers = 8, 
                 check_point_filename = 'cnn_1d_checkpoint.pt', 
                 **kwargs): # to save the best model fit to date)
     """
     Train a 1D CNN model and record accuracy metrics.
     """
     # Reload data
-    train_dataset = BedPeaksDataset(train_data, genome, cnn_1d.seq_len)
-    train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=1000, num_workers = 0)
+    train_dataset = FastBedPeaksDataset(train_data, genome, cnn_1d.seq_len)
+    train_dataloader = torch.utils.data.DataLoader(train_dataset, 
+                                                   batch_size=1000, 
+                                                   num_workers = num_workers, 
+                                                   shuffle = True)
     
-    val_dataset = BedPeaksDataset(validation_data, genome, cnn_1d.seq_len)
-    validation_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=1000)
+    val_dataset = FastBedPeaksDataset(validation_data, genome, cnn_1d.seq_len)
+    validation_dataloader = torch.utils.data.DataLoader(val_dataset, 
+                                                        num_workers = num_workers, 
+                                                        batch_size=1000) # no shuffle important for consistent "random" negatives! 
 
     # Set up model and optimizer
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -307,7 +400,9 @@ def train_model(cnn_1d,
     
     for epoch in range(epochs):
         start_time = timeit.default_timer()
+        np.random.seed() # seeds using current time
         train_loss, train_acc, train_auc = run_one_epoch(train_dataloader, cnn_1d, optimizer)
+        np.random.seed(0) # for consistent randomness in validation
         val_loss, val_acc, val_auc = run_one_epoch(validation_dataloader, cnn_1d, optimizer = None)
         train_accs.append(train_acc)
         val_accs.append(val_acc)
@@ -327,3 +422,83 @@ def train_model(cnn_1d,
             print("Epoch %i took %.2fs. Train loss: %.4f acc: %.4f auc %.3f. Val loss: %.4f acc: %.4f auc %.3f. Patience left: %i" % 
             (epoch+1, elapsed, train_loss, train_acc, train_auc, val_loss, val_acc, val_auc, patience_counter ))
     return cnn_1d, train_accs, val_accs, train_aucs, val_aucs
+
+
+def eval_model(cnn_1d, 
+                data, 
+                genome,
+                num_workers = 8, 
+                check_point_filename = 'cnn_1d_checkpoint.pt', 
+                **kwargs): # to save the best model fit to date)
+    """
+    Evaluate a 1D CNN model and record accuracy metrics.
+    """
+    cnn_1d.load_state_dict(torch.load(check_point_filename)) 
+    val_dataset = FastBedPeaksDataset(data, genome, cnn_1d.seq_len)
+    validation_dataloader = torch.utils.data.DataLoader(val_dataset, 
+                                                        num_workers = num_workers, 
+                                                        batch_size=1000) # no shuffle important for consistent "random" negatives! 
+    # Set up model and optimizer
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    cnn_1d.to(device)
+
+    np.random.seed(0) # for consistent randomness in validation
+    return run_one_epoch(validation_dataloader, cnn_1d, optimizer = None)
+
+
+def test_settings(specific_pwms, 
+                  train_data, 
+                  validation_data,
+                  genome, 
+                  seq_len_range = range(100, 701, 100), 
+                 base_checkpoint_dir = "checkpoints/"
+                 ): 
+    results = []
+    
+    os.makedirs(base_checkpoint_dir, exist_ok = True)
+
+    for max_over_positions in (False,True): # rather than logSumExp
+        for max_over_motifs in (False,True): # rather than logSumExp
+            for motif_then_pos in (False,True): # summarize over motif before position
+                for seq_len in seq_len_range: 
+                    if (not motif_then_pos) and (max_over_positions == max_over_motifs): continue # otherwise is equivalent
+                    phys_net = PhysNet(specific_pwms, 
+                                        max_over_positions = max_over_positions,
+                                         max_over_motifs = max_over_motifs, 
+                                         motif_then_pos = motif_then_pos, 
+                                         seq_len = seq_len)
+                    check_point_filename = base_checkpoint_dir + ("posmax%i_motifmax%i_len%i%s.pt" % (max_over_positions, 
+                                                                                           max_over_motifs, 
+                                                                                           seq_len,
+                                                                                          "" if motif_then_pos else "_posthenmax"))
+                    print(check_point_filename)
+                    if os.path.isfile(check_point_filename): 
+                        _, _, val_aucs = eval_model(phys_net, 
+                                              validation_data,
+                                              genome, 
+                                              check_point_filename = check_point_filename)
+                        results.append((max_over_positions, 
+                                    max_over_motifs, 
+                                    seq_len, 
+                                    check_point_filename, 
+                                         motif_then_pos,
+                                    val_aucs,
+                                    0.))
+                        continue
+                    phys_net, train_accs, val_accs, train_aucs, val_aucs = train_model(phys_net, 
+                                                                               train_data, 
+                                                                               validation_data, 
+                                                                               genome, 
+                                                                               verbose = False, 
+                                                                               check_point_filename = check_point_filename,
+                                                                               lr = 0.1) 
+                    torch.save(phys_net.state_dict(), check_point_filename) 
+                    results.append((max_over_positions, 
+                                    max_over_motifs, 
+                                    seq_len, 
+                                    check_point_filename, 
+                                     motif_then_pos, 
+                                   np.max(val_aucs),
+                                   np.max(train_aucs)))
+                    
+    return pd.DataFrame(results, columns = ["posmax", "motifmax", "seqlen", "file", "motif_then_pos", "val_auc", "train_auc"])
