@@ -1,11 +1,19 @@
 import pyro
 import torch
-from . import pyro_utils
+from . import pyro_utils, asb_data
 import pyro.distributions as dist
 from pyro.infer.autoguide import AutoDiagonalNormal, AutoGuideList, AutoDelta
 from pyro import poutine
 from torch.distributions import constraints
 import torch.nn.functional as F
+
+import scipy.stats
+import pandas as pd
+import numpy as np
+
+import matplotlib.pyplot as plt
+
+logistic = lambda g: 1./(1.+np.exp(-g))
 
 def model_base(data,
           input_conc = 5.,
@@ -69,17 +77,19 @@ def log_sigmoid_deriv(x):
 
 def guide_mean_field(data):
     
+    device = data.device
+        
     def conc_helper(name):    
-        param = pyro.param(name + "_", lambda: torch.tensor(5.), constraint=constraints.positive)
+        param = pyro.param(name + "_param", lambda: torch.tensor(5., device = device), constraint=constraints.positive)
         return pyro.sample(name, dist.Delta(param))
     input_conc = conc_helper("input_conc")
     input_count_conc = conc_helper("input_count_conc")
     IP_conc = conc_helper("IP_conc")
     IP_count_conc = conc_helper("IP_count_conc")
     
-    input_ratio_loc = pyro.param('input_ratio_loc', lambda: torch.zeros(data.num_snps))
+    input_ratio_loc = pyro.param('input_ratio_loc', lambda: torch.zeros(data.num_snps, device = device))
     input_ratio_scale = pyro.param('input_ratio_scale', 
-                                   lambda: torch.ones(data.num_snps), 
+                                   lambda: torch.ones(data.num_snps, device = device), 
                                    constraint=constraints.positive)
     input_ratio_logit = pyro.sample("input_ratio_logit", 
                                     dist.Normal(input_ratio_loc, input_ratio_scale).to_event(1),
@@ -90,9 +100,9 @@ def guide_mean_field(data):
                                   F.sigmoid( input_ratio_logit ), 
                                   log_density = -log_sigmoid_deriv(input_ratio_logit)).to_event(1) )
     
-    IP_ratio_loc = pyro.param('IP_ratio_loc', lambda: torch.zeros(data.num_snps))
+    IP_ratio_loc = pyro.param('IP_ratio_loc', lambda: torch.zeros(data.num_snps, device = device))
     IP_ratio_scale = pyro.param('IP_ratio_scale', 
-                                   lambda: torch.ones(data.num_snps), 
+                                   lambda: torch.ones(data.num_snps, device = device), 
                                    constraint=constraints.positive)
     IP_ratio_logit = pyro.sample("IP_ratio_logit", 
                                  dist.Normal(IP_ratio_loc, IP_ratio_scale).to_event(1),
@@ -109,9 +119,11 @@ def guide_mean_field(data):
            }
 
 def structured_guide(data):
+    device = data.device
     
     def conc_helper(name):    
-        param = pyro.param(name + "_", lambda: torch.tensor(5.), constraint=constraints.positive)
+        param = pyro.param(name + "_param", lambda: torch.tensor(5., device = device), 
+                           constraint=constraints.positive)
         return pyro.sample(name, dist.Delta(param))
     input_conc = conc_helper("input_conc")
     input_count_conc = conc_helper("input_count_conc")
@@ -119,16 +131,16 @@ def structured_guide(data):
     IP_count_conc = conc_helper("IP_count_conc")
     
     z1 = pyro.sample("z1", 
-                    dist.Normal(torch.zeros(data.num_snps), 
-                                torch.ones(data.num_snps)).to_event(1),
+                    dist.Normal(torch.zeros(data.num_snps, device = device), 
+                                torch.ones(data.num_snps, device = device)).to_event(1),
                     infer={'is_auxiliary': True})
     z2 = pyro.sample("z2", 
-                    dist.Normal(torch.zeros(data.num_snps), 
-                                torch.ones(data.num_snps)).to_event(1),
+                    dist.Normal(torch.zeros(data.num_snps, device = device), 
+                                torch.ones(data.num_snps, device = device)).to_event(1),
                     infer={'is_auxiliary': True})
-    input_ratio_loc = pyro.param('input_ratio_loc', lambda: torch.zeros(data.num_snps))
+    input_ratio_loc = pyro.param('input_ratio_loc', lambda: torch.zeros(data.num_snps, device = device))
     input_ratio_scale = pyro.param('input_ratio_scale', 
-                                   lambda: torch.ones(data.num_snps), 
+                                   lambda: torch.ones(data.num_snps, device = device), 
                                    constraint=constraints.positive)
     input_ratio_logit = pyro.sample("input_ratio_logit", 
                                     dist.Delta(input_ratio_loc + input_ratio_scale * z1,
@@ -139,12 +151,12 @@ def structured_guide(data):
                                   torch.sigmoid( input_ratio_logit ), 
                                   log_density = -log_sigmoid_deriv(input_ratio_logit)).to_event(1) )
     
-    IP_ratio_loc = pyro.param('IP_ratio_loc', lambda: torch.zeros(data.num_snps))
+    IP_ratio_loc = pyro.param('IP_ratio_loc', lambda: torch.zeros(data.num_snps, device = device))
     IP_ratio_scale = pyro.param('IP_ratio_scale', 
-                                   lambda: torch.ones(data.num_snps), 
+                                   lambda: torch.ones(data.num_snps, device = device), 
                                    constraint=constraints.positive)
     IP_ratio_corr = pyro.param('IP_ratio_corr', 
-                                   lambda: torch.zeros(data.num_snps))
+                                   lambda: torch.zeros(data.num_snps, device = device))
     IP_ratio_logit = pyro.sample('IP_ratio_logit', 
                                  dist.Delta(IP_ratio_loc + IP_ratio_corr * z1 + IP_ratio_scale * z2,
                                               log_density = -IP_ratio_scale.log()).to_event(1),
@@ -164,7 +176,7 @@ def structured_guide(data):
 def fit(data, 
        learn_concs = True, 
       iterations = 1000,
-      num_samples = 300,
+      num_samples = 0,
       use_structured_guide = True
       ):
 
@@ -190,8 +202,107 @@ def fit(data,
 
     losses = pyro_utils.fit(model,guide,data,iterations=iterations)
 
-    stats, samples = pyro_utils.get_posterior_stats(model, guide, data, num_samples = num_samples, dont_return_sites = ['input_alt','IP_alt'])
+    if num_samples > 0: 
+        stats, samples = pyro_utils.get_posterior_stats(model, guide, data, num_samples = num_samples, dont_return_sites = ['input_alt','IP_alt'])
+    else: 
+        stats, samples = None, None
     
-    print({ k:stats[k]['mean'].item() for k in to_optimize }) 
+    fit_hypers = { k:pyro.param(k + "_param").item() for k in to_optimize }
+
+    # ~= samples["input_ratio"].logit().mean(0)
+    input_ratio_loc = pyro.param("input_ratio_loc").detach().cpu().numpy() 
+    # ~= samples["input_ratio"].logit().std(0)
+    ase_sd = pyro.param("input_ratio_scale").detach().cpu().numpy() # same as ase_sd
+
+    # ~= samples["IP_ratio"].logit().mean(0)
+    IP_ratio_loc = pyro.param("IP_ratio_loc").detach().cpu().numpy() 
+    # ~= samples["IP_ratio"].logit().std(0)
+    #IP_ratio_sd = torch.sqrt(pyro.param("IP_ratio_scale")**2 + pyro.param("IP_ratio_corr")**2).detach().cpu().numpy() 
     
-    return losses, model, guide, stats, samples
+    logit_pred_ratio = data.pred_ratio.logit()
+    # ~= samples["input_ratio"].logit().mean(0) - logit_pred_ratio
+    ase_loc = (pyro.param("input_ratio_loc") - logit_pred_ratio).detach().cpu().numpy() 
+    ase_q = scipy.stats.norm().cdf(-np.abs(ase_loc / ase_sd)) # ~= (samples["input_ratio"] > samples["IP_ratio"]).float().mean(0)
+    
+    asb_loc = (pyro.param("IP_ratio_loc") - pyro.param("input_ratio_loc")).detach().cpu().numpy() 
+    asb_sd = (pyro.param("IP_ratio_scale")**2 
+              + (pyro.param("input_ratio_scale") 
+                 - pyro.param("IP_ratio_corr"))**2 ).sqrt().detach().cpu().numpy() 
+
+    asb_q = scipy.stats.norm().cdf(-np.abs(asb_loc / asb_sd)) # ~= (samples["input_ratio"] > samples["IP_ratio"]).float().mean(0)
+    
+    results = pd.DataFrame({"shrunk_input_logratio" : input_ratio_loc, 
+                            "ase_loc" : ase_loc, 
+                            "ase_sd" : ase_sd, 
+                            "ase_q" : ase_q,
+                            "shrunk_IP_logratio" : IP_ratio_loc, 
+                            "asb_loc" : asb_loc, 
+                            "asb_sd" : asb_sd, 
+                            "asb_q" : asb_q
+                           })
+    
+    return losses, model, guide, stats, samples, results, fit_hypers
+
+
+def make_plots(dat_here, fdr_threshold):
+        
+    plt.figure(figsize=(14,10))
+    plt.subplot(221)
+    plt.scatter(dat_here.input_ratio, dat_here.IP_ratio,alpha=0.1, color="gray")
+    dat_ss = dat_here[dat_here.asb_q < fdr_threshold]
+    plt.scatter(dat_ss.input_ratio, dat_ss.IP_ratio,alpha=0.03, color = "red")
+    plt.xlabel("Input proportion alt"); plt.ylabel("IP proportion alt")
+    plt.title('%i (%.1f%%) significant %.0f%% FDR' % ((dat_here.asb_q < fdr_threshold).sum(), 
+                                                      100. * (dat_here.asb_q < fdr_threshold).mean(), 
+                                                      fdr_threshold*100))
+
+    plt.subplot(222)
+    plt.scatter( logistic(dat_here.shrunk_input_logratio), logistic(dat_here.shrunk_IP_logratio),alpha=0.1, color="gray")
+    dat_ss = dat_here[dat_here.asb_q < fdr_threshold]
+    plt.scatter(logistic(dat_ss.shrunk_input_logratio), logistic(dat_ss.shrunk_IP_logratio),alpha=0.03, color = "red")
+    plt.xlabel("Shrunk input proportion alt"); plt.ylabel("Shrunk IP proportion alt")
+    plt.title('%i (%.1f%%) significant %.0f%% FDR' % ((dat_here.asb_q < fdr_threshold).sum(), 
+                                                      100. * (dat_here.asb_q < fdr_threshold).mean(), 
+                                                      fdr_threshold*100))
+
+    plt.subplot(223)
+    plt.scatter( dat_here.pred_ratio, dat_here.input_ratio,alpha=0.1, color="gray")
+    dat_ss = dat_here[dat_here.ase_q < fdr_threshold]
+    plt.scatter( dat_ss.pred_ratio, dat_ss.input_ratio,alpha=0.03, color = "red")
+    plt.xlabel("Alt proportion in DNA"); plt.ylabel("Input proportion alt")
+    plt.title('%i (%.1f%%) significant %.0f%% FDR' % ((dat_here.ase_q < fdr_threshold).sum(), 
+                                                      100. * (dat_here.ase_q < fdr_threshold).mean(), 
+                                                      fdr_threshold*100))
+
+    plt.subplot(224)
+    plt.scatter( dat_here.pred_ratio, logistic(dat_here.shrunk_input_logratio),alpha=0.1, color="gray")
+    dat_ss = dat_here[dat_here.ase_q < fdr_threshold]
+    plt.scatter(dat_ss.pred_ratio, logistic(dat_ss.shrunk_input_logratio),alpha=0.03, color = "red")
+    plt.xlabel("Alt proportion in DNA"); plt.ylabel("Shrunk input proportion alt")
+    plt.title('%i (%.1f%%) significant %.0f%% FDR' % ((dat_here.ase_q < fdr_threshold).sum(), 
+                                                      100. * (dat_here.ase_q < fdr_threshold).mean(), 
+                                                      fdr_threshold*100))
+    plt.show()
+    return()
+
+
+def fit_plot_and_save(dat_here, results_file, fdr_threshold = 0.05, device="cpu", **kwargs): 
+    
+    data = asb_data.RelativeASBdata.from_pandas(dat_here, device = device)
+    
+    losses, model, guide, stats, samples, results, fit_hypers = fit(data, **kwargs)
+
+    print("Learned hyperparameters:",fit_hypers)
+    
+    plt.figure(figsize=(6,4))
+    plt.plot(losses)
+    
+    dat_here = pd.concat((dat_here.reset_index(drop=True), 
+                          results.reset_index(drop=True)), axis = 1 )
+    
+    dat_here.drop(columns = ["input_ratio", "IP_ratio"] # can easily be recalculated from counts
+                ).to_csv(results_file, index = False, sep = "\t")
+
+    make_plots(dat_here, fdr_threshold)
+    
+    return dat_here

@@ -64,17 +64,38 @@ def merge_geno_and_counts(sanger,
                           dat, 
                           dat_IP, 
                           w, 
+                          suffixes = ["_hg19",""],
                           sample_inds = range(5,16),
                           num_haploids = 18,
                           input_total_min = 10, 
                           allele_count_min = 4, 
                           ip_total_min = 30,
                           plot = True):
+    """sanger: genotype data
+    dat: input alleleic counts
+    dat_IP: IP allelic counts
+    w: pre-estimated deconvolution betas
+    
+    Returns
+    -------
+    merged: merged df with all allelic counts and estimated allelic ratio
+    dat_sub: data filtered for sufficient allelic reads to test SNP"""
+    
+    # We currently join using rsID to get around the mixutre of hg19 and hg38 coords. This causes a memory blow up if there are missing rsIDs (denoted by "."), so filter those ~11% of SNPs out. 
+    dat = dat[dat.variantID != "."]
+    dat = dat[~dat.variantID.duplicated()]
+    dat_IP = dat_IP[dat_IP.variantID != "."]
+    dat_IP = dat_IP[~dat_IP.variantID.duplicated()]
+
     # have to match on rsID because sanger.vcf is hg19 and allelic counts are on hg38
-    imp_merged = sanger.rename(columns = {"SNP" : "variantID"}).merge(dat, on = ["variantID", "refAllele", "altAllele"]) # sanger is hg19
+    print("Joining genotype and input allelic counts")
+    imp_merged = sanger.rename(columns = {"SNP" : "variantID"}
+                              ).merge(dat, 
+                                      on = ["contig", "variantID", "refAllele", "altAllele"],
+                                     suffixes = suffixes) # sanger is hg19
     # there are only 0.08% flipped alleles so not worth doing.
     # np.isnan(imp_merged.iloc[:,5:16]).any() all False
-    imp_merged["allelic_ratio"] = imp_merged.altCount / imp_merged.totalCount
+    imp_merged["input_ratio"] = imp_merged.altCount / imp_merged.totalCount
     X = 0.5 * imp_merged.iloc[:,sample_inds].to_numpy().copy()
     # p = X @ w # WTF doesn't this work!? 
     # p = np.dot(X,w) # doesn't work either
@@ -83,18 +104,24 @@ def merge_geno_and_counts(sanger,
     
     if plot:
         imp_merged_30 = imp_merged[imp_merged.totalCount >= 30]
-        corr,_ = scipy.stats.pearsonr(imp_merged_30.pred, imp_merged_30.allelic_ratio)
+        corr,_ = scipy.stats.pearsonr(imp_merged_30.pred, imp_merged_30.input_ratio)
         R2 = corr*corr
-        plt.scatter(imp_merged_30.pred, imp_merged_30.allelic_ratio, alpha = 0.005) 
+        plt.scatter(imp_merged_30.pred, imp_merged_30.input_ratio, alpha = 0.005) 
         plt.title("R2=%.3f" % R2)
         plt.xlabel("Predicted from genotype")
         plt.ylabel("Observed in input")
         plt.show()
 
     # merge (imp_geno+input) with IP
-    merged = imp_merged.drop(labels=imp_merged.columns[range(5,16)], axis=1).rename(columns={"position_y":"position","contig_x":"contig"}).merge(dat_IP, on = ("contig", "position", "variantID", "refAllele", "altAllele"), suffixes = ("_input", "_IP"))
+    print("Joining genotype+input with IP allelic counts")
+    merged = imp_merged.drop(labels=sanger.columns[sample_inds], axis=1 # # .rename(columns={"position_y":"position"} # ,"contig_x":"contig" ?
+                            ).merge(dat_IP, 
+                                    on = ("contig", "position", "variantID", "refAllele", "altAllele"), 
+                                    suffixes = ("_input", "_IP"))
     #merged = merged.drop(labels=["contig_y", "position_x" ], axis=1)
-
+    
+    merged["IP_ratio"] = merged.altCount_IP / merged.totalCount_IP
+    
     dat_sub = merged[merged.totalCount_input >= input_total_min].rename(columns = {"pred" : "pred_ratio"})
     dat_sub = dat_sub[dat_sub.refCount_input >= allele_count_min]
     dat_sub = dat_sub[dat_sub.altCount_input >= allele_count_min]

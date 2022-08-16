@@ -177,7 +177,7 @@ class Exp(nn.Module):
     def forward(self, x):
         return x.exp()    
     
-class CNN_1d(nn.Module):
+class model(nn.Module):
 
     def __init__(self, 
                  n_output_channels = 1, 
@@ -191,7 +191,7 @@ class CNN_1d(nn.Module):
                  use_Exp = True,
                  pooling = nn.MaxPool1d):
         
-        super(CNN_1d, self).__init__()
+        super(model, self).__init__()
         self.rf = 0 # running estimate of the receptive field
         self.chunk_size = 1 # running estimate of num basepairs corresponding to one position after convolutions
 
@@ -281,6 +281,8 @@ class PhysNet(nn.Module):
 
         return affin * self.scale + self.offset
     
+def inv_softplus(x):
+    return torch.expm1(x).log()
     
 class FinePhysNet(nn.Module): 
     """Model to FINEtune PWMs, although can also be given randomly initialized PWMs"""
@@ -291,6 +293,8 @@ class FinePhysNet(nn.Module):
                  motif_offset = None,
                  scale_unc = torch.tensor(1.), 
                  offset = torch.tensor(0.), 
+                 annealing = False, 
+                 annealing_init = 0.01, 
                  seq_len = 300): 
         """known_pwm: nMotif x 4 x length"""
         super().__init__()
@@ -302,6 +306,12 @@ class FinePhysNet(nn.Module):
         self.scale_unc = nn.Parameter(scale_unc) 
         self.offset = nn.Parameter(offset)
         self.positive_act = positive_act
+        annealing_init_unc = inv_softplus(torch.tensor(annealing_init)) # inv_softplus
+        self.inverse_temp_unc = nn.Parameter(annealing_init_unc) if annealing else None
+    
+    @property
+    def inverse_temp(self): 
+        return F.softplus(self.inverse_temp_unc) if self.inverse_temp_unc else 1. 
     
     @property
     def motif_scale(self): 
@@ -314,29 +324,30 @@ class FinePhysNet(nn.Module):
     def forward(self, x):
         conv_out = F.conv1d(x, self.pwm) # output will be batch x nMotif x length
         conv_lin = conv_out + self.motif_offset[None,:,None]
+        conv_lin_temp = conv_lin * self.inverse_temp
+        
+        affin = conv_lin_temp.logsumexp((1,2))
+        affin_temp = affin / self.inverse_temp
 
-        affin = conv_lin.logsumexp((1,2))
+        return affin_temp * self.scale + self.offset
 
-        return affin * self.scale + self.offset
-
-def run_one_epoch(dataloader, cnn_1d, optimizer = None):
+def run_one_epoch(dataloader, model, optimizer = None):
 
     train_flag = not (optimizer is None)
 
     torch.set_grad_enabled(train_flag)
-    cnn_1d.train() if train_flag else cnn_1d.eval() 
+    model.train() if train_flag else model.eval() 
 
     losses = []
     preds = []
     labels = []
 
-    device = next(cnn_1d.parameters()).device
+    device = next(model.parameters()).device
 
     for (x,y) in dataloader: # collection of tuples with iterator
-
         (x, y) = ( x.to(device), y.to(device) ) # transfer data to GPU
 
-        output = cnn_1d(x) # forward pass
+        output = model(x) # forward pass
         output = output.squeeze() # remove spurious channel dimension if necessary
         loss = F.binary_cross_entropy_with_logits( output, y ) # numerically stable
 
@@ -359,35 +370,39 @@ def run_one_epoch(dataloader, cnn_1d, optimizer = None):
     return( np.mean(losses), accuracy, auroc )
 
 
-def train_model(cnn_1d, 
+def train_model(model, 
                 train_data, 
                 validation_data, 
                 genome,
                 epochs=100, 
                 patience=10, 
                 verbose = True,
-                num_workers = 8, 
-                check_point_filename = 'cnn_1d_checkpoint.pt', 
+                num_workers = 8,
+                annealing_schedule = None, 
+                check_point_filename = 'checkpoint.pt', 
                 **kwargs): # to save the best model fit to date)
     """
     Train a 1D CNN model and record accuracy metrics.
     """
     # Reload data
-    train_dataset = FastBedPeaksDataset(train_data, genome, cnn_1d.seq_len)
+    train_dataset = FastBedPeaksDataset(train_data, genome, model.seq_len)
     train_dataloader = torch.utils.data.DataLoader(train_dataset, 
                                                    batch_size=1000, 
                                                    num_workers = num_workers, 
                                                    shuffle = True)
     
-    val_dataset = FastBedPeaksDataset(validation_data, genome, cnn_1d.seq_len)
+    val_dataset = FastBedPeaksDataset(validation_data, genome, model.seq_len)
     validation_dataloader = torch.utils.data.DataLoader(val_dataset, 
                                                         num_workers = num_workers, 
                                                         batch_size=1000) # no shuffle important for consistent "random" negatives! 
 
     # Set up model and optimizer
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    cnn_1d.to(device)
-    optimizer = torch.optim.Adam(cnn_1d.parameters(), amsgrad=True, **kwargs)
+    model.to(device)
+    annealing_flag = not annealing_schedule is None
+    parameters = [ v for k,v in model.named_parameters() if k != "inverse_temp_unc"
+                 ] if annealing_flag else model.parameters()        
+    optimizer = torch.optim.Adam(parameters, amsgrad=True, **kwargs)
 
     # Training loop w/ early stopping
     train_accs = []
@@ -399,51 +414,53 @@ def train_model(cnn_1d,
     best_val_loss = np.inf
     
     for epoch in range(epochs):
+        if annealing_flag: 
+            if epoch >= len(annealing_schedule): break
+            inv_temp = annealing_schedule[epoch]
+            model.inverse_temp_unc.data = inv_softplus(inv_temp)
         start_time = timeit.default_timer()
         np.random.seed() # seeds using current time
-        train_loss, train_acc, train_auc = run_one_epoch(train_dataloader, cnn_1d, optimizer)
+        train_loss, train_acc, train_auc = run_one_epoch(train_dataloader, model, optimizer)
         np.random.seed(0) # for consistent randomness in validation
-        val_loss, val_acc, val_auc = run_one_epoch(validation_dataloader, cnn_1d, optimizer = None)
+        val_loss, val_acc, val_auc = run_one_epoch(validation_dataloader, model, optimizer = None)
         train_accs.append(train_acc)
         val_accs.append(val_acc)
         train_aucs.append(train_auc)
         val_aucs.append(val_auc)
         if val_loss < best_val_loss: 
-            torch.save(cnn_1d.state_dict(), check_point_filename)
+            torch.save(model.state_dict(), check_point_filename)
             best_val_loss = val_loss
             patience_counter = patience
         else: 
             patience_counter -= 1
             if patience_counter <= 0: 
-                cnn_1d.load_state_dict(torch.load(check_point_filename)) # recover the best model so far
+                model.load_state_dict(torch.load(check_point_filename)) # recover the best model so far
                 break
         elapsed = float(timeit.default_timer() - start_time)
         if verbose: 
             print("Epoch %i took %.2fs. Train loss: %.4f acc: %.4f auc %.3f. Val loss: %.4f acc: %.4f auc %.3f. Patience left: %i" % 
             (epoch+1, elapsed, train_loss, train_acc, train_auc, val_loss, val_acc, val_auc, patience_counter ))
-    return cnn_1d, train_accs, val_accs, train_aucs, val_aucs
+    return train_accs, val_accs, train_aucs, val_aucs
 
 
-def eval_model(cnn_1d, 
+def eval_model(model, 
                 data, 
                 genome,
                 num_workers = 8, 
-                check_point_filename = 'cnn_1d_checkpoint.pt', 
                 **kwargs): # to save the best model fit to date)
     """
     Evaluate a 1D CNN model and record accuracy metrics.
     """
-    cnn_1d.load_state_dict(torch.load(check_point_filename)) 
-    val_dataset = FastBedPeaksDataset(data, genome, cnn_1d.seq_len)
+    val_dataset = FastBedPeaksDataset(data, genome, model.seq_len)
     validation_dataloader = torch.utils.data.DataLoader(val_dataset, 
                                                         num_workers = num_workers, 
                                                         batch_size=1000) # no shuffle important for consistent "random" negatives! 
     # Set up model and optimizer
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    cnn_1d.to(device)
+    model.to(device)
 
     np.random.seed(0) # for consistent randomness in validation
-    return run_one_epoch(validation_dataloader, cnn_1d, optimizer = None)
+    return run_one_epoch(validation_dataloader, model, optimizer = None)
 
 
 def test_settings(specific_pwms, 
@@ -473,6 +490,7 @@ def test_settings(specific_pwms,
                                                                                           "" if motif_then_pos else "_posthenmax"))
                     print(check_point_filename)
                     if os.path.isfile(check_point_filename): 
+                        phys_net.load_state_dict(torch.load(check_point_filename)) 
                         _, _, val_aucs = eval_model(phys_net, 
                                               validation_data,
                                               genome, 
@@ -485,7 +503,7 @@ def test_settings(specific_pwms,
                                     val_aucs,
                                     0.))
                         continue
-                    phys_net, train_accs, val_accs, train_aucs, val_aucs = train_model(phys_net, 
+                    train_accs, val_accs, train_aucs, val_aucs = train_model(phys_net, 
                                                                                train_data, 
                                                                                validation_data, 
                                                                                genome, 
