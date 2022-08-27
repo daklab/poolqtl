@@ -244,41 +244,45 @@ def fit(data,
     return losses, model, guide, stats, samples, results, fit_hypers
 
 
-def make_plots(dat_here, fdr_threshold):
+def make_plots(dat_here, fdr_threshold = 0.05, insig_alpha = 0.1, sig_alpha = 0.05):
         
     plt.figure(figsize=(14,10))
     plt.subplot(221)
-    plt.scatter(dat_here.input_ratio, dat_here.IP_ratio,alpha=0.1, color="gray")
+    plt.scatter(dat_here.input_ratio, dat_here.IP_ratio,alpha=insig_alpha, color="gray")
     dat_ss = dat_here[dat_here.asb_q < fdr_threshold]
-    plt.scatter(dat_ss.input_ratio, dat_ss.IP_ratio,alpha=0.03, color = "red")
+    plt.scatter(dat_ss.input_ratio, dat_ss.IP_ratio,alpha=sig_alpha, color = "red")
     plt.xlabel("Input proportion alt"); plt.ylabel("IP proportion alt")
+    plt.xlim((0,1)); plt.ylim((0,1))
     plt.title('%i (%.1f%%) significant %.0f%% FDR' % ((dat_here.asb_q < fdr_threshold).sum(), 
                                                       100. * (dat_here.asb_q < fdr_threshold).mean(), 
                                                       fdr_threshold*100))
 
     plt.subplot(222)
-    plt.scatter( logistic(dat_here.shrunk_input_logratio), logistic(dat_here.shrunk_IP_logratio),alpha=0.1, color="gray")
+    plt.scatter( logistic(dat_here.shrunk_input_logratio), logistic(dat_here.shrunk_IP_logratio),alpha=insig_alpha, color="gray")
     dat_ss = dat_here[dat_here.asb_q < fdr_threshold]
-    plt.scatter(logistic(dat_ss.shrunk_input_logratio), logistic(dat_ss.shrunk_IP_logratio),alpha=0.03, color = "red")
+    plt.scatter(logistic(dat_ss.shrunk_input_logratio), logistic(dat_ss.shrunk_IP_logratio),alpha=sig_alpha, color = "red")
     plt.xlabel("Shrunk input proportion alt"); plt.ylabel("Shrunk IP proportion alt")
+    plt.xlim((0,1)); plt.ylim((0,1))
     plt.title('%i (%.1f%%) significant %.0f%% FDR' % ((dat_here.asb_q < fdr_threshold).sum(), 
                                                       100. * (dat_here.asb_q < fdr_threshold).mean(), 
                                                       fdr_threshold*100))
 
     plt.subplot(223)
-    plt.scatter( dat_here.pred_ratio, dat_here.input_ratio,alpha=0.1, color="gray")
+    plt.scatter( dat_here.pred_ratio, dat_here.input_ratio,alpha=insig_alpha, color="gray")
     dat_ss = dat_here[dat_here.ase_q < fdr_threshold]
-    plt.scatter( dat_ss.pred_ratio, dat_ss.input_ratio,alpha=0.03, color = "red")
+    plt.scatter( dat_ss.pred_ratio, dat_ss.input_ratio,alpha=sig_alpha, color = "red")
     plt.xlabel("Alt proportion in DNA"); plt.ylabel("Input proportion alt")
+    plt.xlim((0,1)); plt.ylim((0,1))
     plt.title('%i (%.1f%%) significant %.0f%% FDR' % ((dat_here.ase_q < fdr_threshold).sum(), 
                                                       100. * (dat_here.ase_q < fdr_threshold).mean(), 
                                                       fdr_threshold*100))
 
     plt.subplot(224)
-    plt.scatter( dat_here.pred_ratio, logistic(dat_here.shrunk_input_logratio),alpha=0.1, color="gray")
+    plt.scatter( dat_here.pred_ratio, logistic(dat_here.shrunk_input_logratio),alpha=insig_alpha, color="gray")
     dat_ss = dat_here[dat_here.ase_q < fdr_threshold]
-    plt.scatter(dat_ss.pred_ratio, logistic(dat_ss.shrunk_input_logratio),alpha=0.03, color = "red")
+    plt.scatter(dat_ss.pred_ratio, logistic(dat_ss.shrunk_input_logratio),alpha=sig_alpha, color = "red")
     plt.xlabel("Alt proportion in DNA"); plt.ylabel("Shrunk input proportion alt")
+    plt.xlim((0,1)); plt.ylim((0,1))
     plt.title('%i (%.1f%%) significant %.0f%% FDR' % ((dat_here.ase_q < fdr_threshold).sum(), 
                                                       100. * (dat_here.ase_q < fdr_threshold).mean(), 
                                                       fdr_threshold*100))
@@ -286,7 +290,7 @@ def make_plots(dat_here, fdr_threshold):
     return()
 
 
-def fit_plot_and_save(dat_here, results_file, fdr_threshold = 0.05, device="cpu", **kwargs): 
+def fit_and_save(dat_here, results_file, device="cpu", **kwargs): 
     
     data = asb_data.RelativeASBdata.from_pandas(dat_here, device = device)
     
@@ -302,7 +306,5 @@ def fit_plot_and_save(dat_here, results_file, fdr_threshold = 0.05, device="cpu"
     
     dat_here.drop(columns = ["input_ratio", "IP_ratio"] # can easily be recalculated from counts
                 ).to_csv(results_file, index = False, sep = "\t")
-
-    make_plots(dat_here, fdr_threshold)
     
     return dat_here

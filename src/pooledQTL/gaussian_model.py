@@ -31,16 +31,25 @@ def normal_model_base(data,
     asb_scale = convertr(asb_scale, "asb_scale")
     IP_count_conc = convertr(IP_count_conc, "IP_count_conc")
     
-    ase_t_df = convertr(ase_t_df, "ase_t_df")
-    asb_t_df = convertr(asb_t_df, "asb_t_df")
+    if type(ase_t_df) == float and np.isinf(ase_t_df):
+        ase = pyro.sample("ase", # allele specific expression
+            dist.Normal(0., ase_scale).expand([data.num_snps]).to_event(1)
+        )
+    else:
+        ase_t_df = convertr(ase_t_df, "ase_t_df")
+        ase = pyro.sample("ase", # allele specific expression
+            dist.StudentT(ase_t_df, 0., ase_scale).expand([data.num_snps]).to_event(1)
+        )
 
-    ase = pyro.sample("ase", # allele specific expression
-        dist.StudentT(ase_t_df, 0., ase_scale).expand([data.num_snps]).to_event(1)
-    )
-    
-    asb = pyro.sample("asb", # allele specific binding
-        dist.StudentT(asb_t_df, 0., asb_scale).expand([data.num_snps]).to_event(1)
-    )
+    if type(asb_t_df) == float and np.isinf(asb_t_df):
+        asb = pyro.sample("asb", # allele specific binding
+            dist.Normal(0., asb_scale).expand([data.num_snps]).to_event(1)
+        )
+    else:
+        asb_t_df = convertr(asb_t_df, "asb_t_df")
+        asb = pyro.sample("asb", # allele specific binding
+            dist.StudentT(asb_t_df, 0., asb_scale).expand([data.num_snps]).to_event(1)
+        )
 
     with pyro.plate("data", data.num_snps):
         input_ratio = torch.logit(data.pred_ratio) + ase
@@ -74,17 +83,28 @@ def rep_model_base(data,
 
     asb_scale = convertr(asb_scale, "asb_scale")
     IP_count_conc = convertr(IP_count_conc, "IP_count_conc")
-    
-    ase_t_df = convertr(ase_t_df, "ase_t_df")
-    asb_t_df = convertr(asb_t_df, "asb_t_df")
 
-    ase = pyro.sample("ase", # allele specific expression
-        dist.StudentT(ase_t_df, 0., ase_scale).expand([data.num_snps]).to_event(1)
-    )
-    
-    asb = pyro.sample("asb", # allele specific binding
-        dist.StudentT(asb_t_df, 0., asb_scale).expand([data.num_snps]).to_event(1)
-    )
+    if type(ase_t_df) == float and np.isinf(ase_t_df):
+        print("Gaussian!")
+        ase = pyro.sample("ase", # allele specific expression
+            dist.Normal(0., ase_scale).expand([data.num_snps]).to_event(1)
+        )
+    else:
+        ase_t_df = convertr(ase_t_df, "ase_t_df")
+        ase = pyro.sample("ase", # allele specific expression
+            dist.StudentT(ase_t_df, 0., ase_scale).expand([data.num_snps]).to_event(1)
+        )
+
+    if type(asb_t_df) == float and np.isinf(asb_t_df):
+        print("Gaussian!")
+        asb = pyro.sample("asb", # allele specific binding
+            dist.Normal(0., asb_scale).expand([data.num_snps]).to_event(1)
+        )
+    else:
+        asb_t_df = convertr(asb_t_df, "asb_t_df")
+        asb = pyro.sample("asb", # allele specific binding
+            dist.StudentT(asb_t_df, 0., asb_scale).expand([data.num_snps]).to_event(1)
+        )
 
     with pyro.plate("data", data.num_measurements):
         input_ratio = torch.logit(data.pred_ratio) + ase[data.snp_indices]
@@ -101,7 +121,7 @@ def rep_model_base(data,
                                         eps = 1.0e-8), 
                     obs = data.IP_alt_count)
 
-def normal_guide(data):
+def normal_guide(data, studentT = True):
     
     device = data.device
     
@@ -112,9 +132,6 @@ def normal_guide(data):
     input_count_conc = conc_helper("input_count_conc")
     asb_scale = conc_helper("asb_scale", init = 1.)
     IP_count_conc = conc_helper("IP_count_conc")
-    
-    ase_t_df = conc_helper("ase_t_df", init = 3.)
-    asb_t_df = conc_helper("asb_t_df", init = 3.)
     
     z1 = pyro.sample("z1", 
                     dist.Normal(torch.zeros(data.num_snps, device = device), 
@@ -140,44 +157,51 @@ def normal_guide(data):
     asb = pyro.sample('asb', dist.Delta(asb_loc + asb_corr * z1 + asb_scale_param * z2,
                                               log_density = -asb_scale_param.log()).to_event(1))
     
-    return {"ase_scale": ase_scale, 
+    to_return = {"ase_scale": ase_scale, 
             "input_count_conc": input_count_conc, 
             "asb_scale": asb_scale, 
             "IP_count_conc": IP_count_conc, 
-            "ase_t_df" : ase_t_df, 
-            "asb_t_df" : asb_t_df,
             "ase": ase,
             "asb": asb
            }
+    
+    if studentT: 
+        to_return["ase_t_df"] = conc_helper("ase_t_df", init = 3.)
+        to_return["asb_t_df"] = conc_helper("asb_t_df", init = 3.)
+        
+    return to_return
 
 def fit(data, 
         iterations = 1000,
         num_samples = 0,
         use_structured_guide = True,
         learn_concs = True,
-        learn_t_dof = True): 
+        learn_t_dof = True, 
+        studentT = True): 
     
     model_base = rep_model_base if ("Replicate" in str(type(data))) else normal_model_base # better syntax for determining class?
     
     two = torch.tensor(2., device = data.device)
+    
+    t_dof = 3. if studentT else np.inf
 
     model = lambda data:  model_base(data, 
          ase_scale = dist.HalfCauchy(two) if learn_concs else 1., 
          input_count_conc = dist.Gamma(two,two/10.) if learn_concs else 1.,
          asb_scale = dist.HalfCauchy(two) if learn_concs else 1., 
          IP_count_conc = dist.Gamma(two,two/10.) if learn_concs else 1.,
-         ase_t_df = dist.Gamma(two,two/10.) if learn_t_dof else 3., 
-         asb_t_df = dist.Gamma(two,two/10.) if learn_t_dof else 3.)
+         ase_t_df = dist.Gamma(two,two/10.) if learn_t_dof else t_dof, 
+         asb_t_df = dist.Gamma(two,two/10.) if learn_t_dof else t_dof)
 
     to_optimize = ["ase_scale",
                    "input_count_conc",
                    "asb_scale",
-                   "IP_count_conc",
-                  "ase_t_df",
-                  "asb_t_df"]
+                   "IP_count_conc"]
+    
+    if studentT: to_optimize += [ "ase_t_df", "asb_t_df"]
 
     if use_structured_guide:
-        guide = normal_guide
+        guide = lambda g: normal_guide(g, studentT = studentT)
     else: 
         guide = AutoGuideList(model)
         guide.add(AutoDiagonalNormal(poutine.block(model, hide = to_optimize)))
@@ -226,7 +250,7 @@ def fit(data,
 
 
 
-def fit_plot_and_save(dat_here, results_file, fdr_threshold = 0.05, device="cpu", **kwargs): 
+def fit_and_save(dat_here, results_file, device="cpu", **kwargs): 
 
     data = asb_data.RelativeASBdata.from_pandas(dat_here, device = device) 
 
@@ -245,11 +269,9 @@ def fit_plot_and_save(dat_here, results_file, fdr_threshold = 0.05, device="cpu"
     dat_here.drop(columns = ["input_ratio", "IP_ratio"] # can easily be recalculated from counts
                 ).to_csv(results_file, index = False, sep = "\t")
     
-    beta_model.make_plots(dat_here, fdr_threshold)
-    
     return dat_here
 
-def fit_replicates_plot_and_save(df, results_file, fdr_threshold = 0.05, device="cpu", **kwargs): 
+def fit_replicates_and_save(df, results_file, device="cpu", **kwargs): 
     
     assert(len(df)==2)
     df_cat = pd.concat( df, axis = 0)
@@ -259,17 +281,6 @@ def fit_replicates_plot_and_save(df, results_file, fdr_threshold = 0.05, device=
 
     plt.plot(losses)
     plt.show()
-    
-   #for dat_here in df: 
-    if False: 
-        plt.scatter(dat_here.input_ratio, dat_here.IP_ratio,alpha=0.1, color="gray")
-        dat_ss = dat_here[dat_here.q < fdr_threshold]
-        plt.scatter(dat_ss.input_ratio, dat_ss.IP_ratio,alpha=0.03, color = "red")
-        plt.xlabel("Input proportion alt"); plt.ylabel("IP proportion alt")
-        plt.title('%i (%.1f%%) significant %.0f%% FDR' % ((dat_here["q"] < fdr_threshold).sum(), 
-                                                          100. * (dat_here["q"] < fdr_threshold).mean(), 
-                                                          100 * fdr_threshold))
-        plt.show()
     
     merged_reps = df[0].merge(df[1], 
                                "outer", 

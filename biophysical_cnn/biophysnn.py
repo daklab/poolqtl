@@ -2,12 +2,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
-
+import pyro.distributions as dist
 import pyximport;
 pyximport.install(reload_support=True)
 import seq_utils
-
+import scipy.stats
 import timeit
+from bindingdata import FastBedPeaksDataset, IPcountDataset
 
 import sklearn.metrics
 import os
@@ -26,110 +27,6 @@ def plot_motifs(pwms):
         pwm_df = pd.DataFrame(data = pwms_norm[i,:,:].t().numpy(), columns=("A","C","G","T"))
         crp_logo = logomaker.Logo(pwm_df, ax=ax) 
 
-# positive example: binding of protein onto sequence (ChIP-seq (TF ChIP-seq))
-# negative example: the ones that do not overlap with the positive examples 
-# for chip-seq data: also shuffling nucleotides can be done to keep the GC content the same as positive example
-# because sequencing has biases with GC content and this would be a way to "fix it"
-class BedPeaksIterableDataset(torch.utils.data.IterableDataset):
-
-    def __init__(self, atac_data, genome, context_length, rna = True):
-        super().__init__()
-        self.context_length = context_length
-        self.atac_data = atac_data
-        self.genome = genome
-        self.rna = rna
-
-    def __iter__(self): 
-        prev_end = 0
-        prev_chrom = ""
-        for i,row in enumerate(self.atac_data.itertuples()):
-            midpoint = int(.5 * (row.start + row.end))
-            seq = self.genome[row.chrom][ midpoint - self.context_length//2:midpoint + self.context_length//2]
-            if self.rna and row.strand == "-": seq = seq_utils.reverse_complement(seq)
-            yield(seq_utils.one_hot(seq), np.float32(1)) # positive example
-
-            if prev_chrom == row.chrom and prev_end < row.start: 
-                midpoint = int(.5 * (prev_end + row.start))
-                seq = self.genome[row.chrom][ midpoint - self.context_length//2:midpoint + self.context_length//2]
-                if self.rna and row.strand == "-": seq = seq_utils.reverse_complement(seq)
-                yield(seq_utils.one_hot(seq), np.float32(0)) # negative example midway inbetween peaks, could randomize
-            
-            prev_chrom = row.chrom
-            prev_end = row.end
-
-class BedPeaksDataset(torch.utils.data.Dataset):
-
-    def __init__(self, 
-                 data, 
-                 genome, 
-                 context_length, 
-                 rna = True, 
-                 score_threshold = 0.):
-        super().__init__()
-        self.context_length = context_length
-        self.data = data
-        self.genome = genome
-        self.rna = rna
-        self.score_threshold = score_threshold
-        
-    def __len__(self):
-        return len(self.data)
-    
-    def __getitem__(self, idx): 
-        y = self.data.score.iloc[idx] > self.score_threshold
-        end = self.data.end.iloc[idx]
-        start = self.data.start.iloc[idx]
-        width = end - start
-        if (width < self.context_length) or y: # always take mid point for positives
-            midpoint = int(.5 * (start + end))
-            left = midpoint - self.context_length//2
-            right = midpoint + self.context_length//2
-        else: 
-            left = start if (width == self.context_length) else np.random.randint(
-                start, end - self.context_length)
-            right = left + self.context_length
-        seq = self.genome[self.data.chrom.iloc[idx]][left:right]
-        if self.rna and self.data.strand.iloc[idx] == "-": seq = seq_utils.reverse_complement(seq)
-        return(seq_utils.one_hot(seq), np.float32(y)) 
-    
-class FastBedPeaksDataset(torch.utils.data.Dataset):
-
-    def __init__(self, 
-                 data, 
-                 genome, 
-                 context_length, 
-                 rna = True, 
-                 score_threshold = 0.):
-        super().__init__()
-        self.context_length = context_length
-        self.genome = genome
-        self.rna = rna
-        self.score_threshold = score_threshold
-        self.start = data.start.to_numpy()
-        self.end = data.end.to_numpy()
-        self.chrom = data.chrom.to_numpy()
-        self.score = data.score.to_numpy()
-        self.strand = data.strand.to_numpy()
-        
-    def __len__(self):
-        return len(self.start)
-    
-    def __getitem__(self, idx): 
-        y = self.score[idx] > self.score_threshold
-        end = self.end[idx]
-        start = self.start[idx]
-        width = end - start
-        if (width < self.context_length) or y: # always take mid point for positives
-            midpoint = int(.5 * (start + end))
-            left = midpoint - self.context_length//2
-            right = midpoint + self.context_length//2
-        else: 
-            left = start if (width == self.context_length) else np.random.randint(
-                start, end - self.context_length)
-            right = left + self.context_length
-        seq = self.genome[self.chrom[idx]][left:right]
-        if self.rna and self.strand[idx] == "-": seq = seq_utils.reverse_complement(seq)
-        return(seq_utils.one_hot(seq), np.float32(y)) 
 
 class ExpandCoupled(nn.Module):
     
@@ -165,7 +62,6 @@ class FlippedConv1d(nn.Conv1d):
         #temp[(k-1)*n_out:k*n_out,:,:-1] = self.weight
         temp[:, k-1, :, :-1] = self.weight
         temp = temp.flatten(0,1)
-
         net = super(FlippedConv1d, self)._conv_forward(input, temp, self.bias)
         net = net.exp()
         net = net.transpose(1,2)
@@ -175,9 +71,14 @@ class FlippedConv1d(nn.Conv1d):
 class Exp(nn.Module): 
 
     def forward(self, x):
-        return x.exp()    
+        return x.exp()  
     
-class model(nn.Module):
+class Log(nn.Module): 
+
+    def forward(self, x):
+        return x.log()  
+
+class CNN_1d(nn.Module):
 
     def __init__(self, 
                  n_output_channels = 1, 
@@ -188,10 +89,9 @@ class model(nn.Module):
                  n_hidden = 32, 
                  dropout = 0.2,
                  use_flipping = True,
-                 use_Exp = True,
                  pooling = nn.MaxPool1d):
         
-        super(model, self).__init__()
+        super().__init__()
         self.rf = 0 # running estimate of the receptive field
         self.chunk_size = 1 # running estimate of num basepairs corresponding to one position after convolutions
 
@@ -230,108 +130,87 @@ class model(nn.Module):
         net = self.dense_net(net)
         return(net)
     
+class PositiveConv1d(nn.Conv1d):
+    """
+    Tried this in place of AvgPool1D in LogConvExp net, didn't move much from initialization, and random init didn't work/converge. 
+    """
+    def __init__(self, *args, **kwargs):
+
+        super().__init__(*args, **kwargs)
+        
+        # initialize to approximate AvgPool1D
+        self.weight.data.fill_(-10.)
+        one = torch.expm1(torch.tensor(1./self.weight.size(2))).log() # inverse softplus
+        numc = min(self.weight.size(0), self.weight.size(1))
+        for i in range(numc): self.weight.data[i,i,:] = one
+
+    def forward(self, x):
+        return self._conv_forward(x, F.softplus(self.weight), self.bias)
+    
+    
+class LogConvExpNet(nn.Module):
+
+    def __init__(self, 
+                 n_output_channels = 1, 
+                 filter_widths = [10, 5], 
+                 num_chunks = 5, 
+                 pool_stride = 4, 
+                 pool_width = 7,
+                 nchannels = [4, 32, 32],
+                 n_hidden = 32, 
+                 dropout = 0.2, 
+                 pooling = False):
+        
+        super().__init__()
+        
+        self.rf = 0 # running estimate of the receptive field
+        self.chunk_size = 1 # running estimate of num basepairs corresponding to one position after convolutions
+
+        conv_layers = []
+        for i in range(len(nchannels)-1):
+            conv_layers += [ nn.Conv1d(nchannels[i], nchannels[i+1], filter_widths[i], padding = 0),
+                            Exp(), 
+                        nn.AvgPool1d(pool_width, stride = pool_stride) if pooling else
+                            PositiveConv1d(nchannels[i+1], 
+                                           nchannels[i+1], 
+                                           kernel_size = pool_width, 
+                                           stride = pool_stride, 
+                                           bias = False,
+                                           padding = 0), 
+                        Log()  ] 
+            assert(filter_widths[i] % 2 == 1) # assume this
+            self.rf += (filter_widths[i] - 1) * self.chunk_size
+            self.rf += (pool_width - pool_stride) * self.chunk_size # correct? 
+            self.chunk_size *= pool_stride
+
+        # If you have a model with lots of layers, you can create a list first and 
+        # then use the * operator to expand the list into positional arguments, like this:
+        self.conv_net = nn.Sequential(*conv_layers)
+
+        self.seq_len = num_chunks * self.chunk_size + self.rf # amount of sequence context required
+
+        print("Receptive field:", self.rf, "Chunk size:", self.chunk_size, "Number chunks:", num_chunks)
+
+        self.dense_net = nn.Sequential( nn.Linear(nchannels[-1] * num_chunks, n_hidden),
+                                        nn.Dropout(dropout),
+                                        nn.ELU(inplace=True), 
+                                        nn.Linear(n_hidden, n_output_channels) )
+
+    def forward(self, x):
+        net = self.conv_net(x)
+        net = net.view(net.size(0), -1)
+        net = self.dense_net(net)
+        return(net)
+    
 def torch_max_values(x, dim): 
     return x.max(dim).values
-    
-class PhysNet(nn.Module): 
 
-    def __init__(self, 
-                 known_pwm, 
-                 max_over_positions = False, 
-                 max_over_motifs = False, 
-                 motif_then_pos = True, 
-                 positive_act = F.softplus, 
-                 seq_len = 300): 
-        """known_pwm: nMotif x 4 x length"""
-        super().__init__()
-        nMotif, _, k = known_pwm.shape
-        self.seq_len = seq_len
-        self.nMotif = nMotif
-        self.register_buffer("pwm", known_pwm)
-        self.motif_scale_unc = nn.Parameter(torch.ones(nMotif)) # ReLU this to get constrained
-        self.motif_offset = nn.Parameter(torch.zeros(nMotif))
-        self.scale_unc = nn.Parameter(torch.tensor(1.)) 
-        self.offset = nn.Parameter(torch.tensor(0.))
-        self.positive_act = positive_act
-        motif_summarizer = torch_max_values if max_over_motifs else torch.logsumexp
-        position_summarizer = torch_max_values if max_over_positions else torch.logsumexp
-        
-        def summarizer(x): 
-            return position_summarizer( motif_summarizer(x, 1), 1) \
-                if motif_then_pos else \
-                    motif_summarizer( position_summarizer(x, 2), 1)
-        self.summarizer = summarizer
+def BetaBinomialReparam(mu, conc, total_count, eps = 0.):
+    return dist.BetaBinomial(concentration1 = mu * conc + eps, 
+                             concentration0 = (1.-mu) * conc + eps, 
+                             total_count = total_count)
 
-    @property
-    def motif_scale(self): 
-        return self.positive_act(self.motif_scale_unc)
-
-    @property
-    def scale(self): 
-        return self.positive_act(self.scale_unc)
-
-    def forward(self, x):
-        conv_out = F.conv1d(x, self.pwm) # output will be batch x nMotif x length
-        conv_lin = conv_out * self.motif_scale[None,:,None] + self.motif_offset[None,:,None]
-        #affin = (conv_lin.logsumexp((1,2)) / (self.nMotif * conv_out.shape[2])) \
-        #    if self.use_max else \
-        #    (conv_lin.logsumexp(1).max(1).values / self.nMotif)
-
-        affin = self.summarizer( conv_lin )
-
-        return affin * self.scale + self.offset
-    
-def inv_softplus(x):
-    return torch.expm1(x).log()
-    
-class FinePhysNet(nn.Module): 
-    """Model to FINEtune PWMs, although can also be given randomly initialized PWMs"""
-
-    def __init__(self, 
-                 known_pwm,
-                 positive_act = F.softplus, 
-                 motif_offset = None,
-                 scale_unc = torch.tensor(1.), 
-                 offset = torch.tensor(0.), 
-                 annealing = False, 
-                 annealing_init = 0.01, 
-                 seq_len = 300): 
-        """known_pwm: nMotif x 4 x length"""
-        super().__init__()
-        nMotif, _, k = known_pwm.shape
-        self.seq_len = seq_len
-        self.nMotif = nMotif
-        self.pwm = nn.Parameter(known_pwm)
-        self.motif_offset = nn.Parameter(torch.zeros(nMotif) if (motif_offset is None) else motif_offset)
-        self.scale_unc = nn.Parameter(scale_unc) 
-        self.offset = nn.Parameter(offset)
-        self.positive_act = positive_act
-        annealing_init_unc = inv_softplus(torch.tensor(annealing_init)) # inv_softplus
-        self.inverse_temp_unc = nn.Parameter(annealing_init_unc) if annealing else None
-    
-    @property
-    def inverse_temp(self): 
-        return F.softplus(self.inverse_temp_unc) if self.inverse_temp_unc else 1. 
-    
-    @property
-    def motif_scale(self): 
-        return self.positive_act(self.motif_scale_unc)
-
-    @property
-    def scale(self): 
-        return self.positive_act(self.scale_unc)
-
-    def forward(self, x):
-        conv_out = F.conv1d(x, self.pwm) # output will be batch x nMotif x length
-        conv_lin = conv_out + self.motif_offset[None,:,None]
-        conv_lin_temp = conv_lin * self.inverse_temp
-        
-        affin = conv_lin_temp.logsumexp((1,2))
-        affin_temp = affin / self.inverse_temp
-
-        return affin_temp * self.scale + self.offset
-
-def run_one_epoch(dataloader, model, optimizer = None):
+def run_one_epoch(dataloader, model, optimizer = None, regression = False):
 
     train_flag = not (optimizer is None)
 
@@ -341,15 +220,34 @@ def run_one_epoch(dataloader, model, optimizer = None):
     losses = []
     preds = []
     labels = []
-
+    enrichs = []
+    
     device = next(model.parameters()).device
 
-    for (x,y) in dataloader: # collection of tuples with iterator
-        (x, y) = ( x.to(device), y.to(device) ) # transfer data to GPU
-
-        output = model(x) # forward pass
+    for i,batch in enumerate(dataloader): # collection of tuples with iterator
+        
+        batch = [ g.to(device) for g in batch ] # transfer data to GPU
+        
+        output = model(batch[0]) # forward pass. x==batch[0]
         output = output.squeeze() # remove spurious channel dimension if necessary
-        loss = F.binary_cross_entropy_with_logits( output, y ) # numerically stable
+        
+        assert(not output.isnan().any())
+        print(i, end = "\r")
+        
+        if regression: 
+            input_counts = batch[1]
+            IP_counts = batch[2]
+            bb = BetaBinomialReparam(output.sigmoid(), 
+                                     30., 
+                                     total_count = input_counts + IP_counts,
+                                     eps = 1e-10)
+            loss = -bb.log_prob(IP_counts).mean()
+            enrich = IP_counts / (input_counts + 1.)
+            y = enrich > 3. # gives about 10% positive, doubtless an overestimate
+            enrichs.append(enrich.detach().cpu().numpy())
+        else: 
+            y = batch[1]
+            loss = F.binary_cross_entropy_with_logits( output, y ) # numerically stable
 
         if train_flag: 
             loss.backward() # back propagation
@@ -362,18 +260,20 @@ def run_one_epoch(dataloader, model, optimizer = None):
         losses.append(loss.detach().cpu().numpy())
     
     preds = np.concatenate(preds)
+    enrichs = np.concatenate(enrichs) if regression else None
     labels = np.concatenate(labels)
     auroc = sklearn.metrics.roc_auc_score( labels, preds )
 
-    accuracy = np.mean( (preds > 0.) == labels )
+    accuracy = scipy.stats.pearsonr(preds, enrichs)[0] if regression else np.mean( (preds > 0.) == labels ) 
 
-    return( np.mean(losses), accuracy, auroc )
+    return( np.mean(losses), accuracy, auroc, preds, labels, enrichs )
 
 
 def train_model(model, 
                 train_data, 
                 validation_data, 
                 genome,
+                regression = False,
                 epochs=100, 
                 patience=10, 
                 verbose = True,
@@ -385,13 +285,14 @@ def train_model(model,
     Train a 1D CNN model and record accuracy metrics.
     """
     # Reload data
-    train_dataset = FastBedPeaksDataset(train_data, genome, model.seq_len)
+    DatasetClass = IPcountDataset if regression else FastBedPeaksDataset
+    train_dataset = DatasetClass(train_data, genome, model.seq_len)
     train_dataloader = torch.utils.data.DataLoader(train_dataset, 
                                                    batch_size=1000, 
                                                    num_workers = num_workers, 
                                                    shuffle = True)
     
-    val_dataset = FastBedPeaksDataset(validation_data, genome, model.seq_len)
+    val_dataset = DatasetClass(validation_data, genome, model.seq_len)
     validation_dataloader = torch.utils.data.DataLoader(val_dataset, 
                                                         num_workers = num_workers, 
                                                         batch_size=1000) # no shuffle important for consistent "random" negatives! 
@@ -420,9 +321,9 @@ def train_model(model,
             model.inverse_temp_unc.data = inv_softplus(inv_temp)
         start_time = timeit.default_timer()
         np.random.seed() # seeds using current time
-        train_loss, train_acc, train_auc = run_one_epoch(train_dataloader, model, optimizer)
+        train_loss, train_acc, train_auc, _, _, _ = run_one_epoch(train_dataloader, model, optimizer, regression = regression)
         np.random.seed(0) # for consistent randomness in validation
-        val_loss, val_acc, val_auc = run_one_epoch(validation_dataloader, model, optimizer = None)
+        val_loss, val_acc, val_auc, _, _, _ = run_one_epoch(validation_dataloader, model, optimizer = None, regression = regression)
         train_accs.append(train_acc)
         val_accs.append(val_acc)
         train_aucs.append(train_auc)
@@ -446,12 +347,14 @@ def train_model(model,
 def eval_model(model, 
                 data, 
                 genome,
+                regression = False, 
                 num_workers = 8, 
                 **kwargs): # to save the best model fit to date)
     """
     Evaluate a 1D CNN model and record accuracy metrics.
     """
-    val_dataset = FastBedPeaksDataset(data, genome, model.seq_len)
+    DatasetClass = IPcountDataset if regression else FastBedPeaksDataset
+    val_dataset = DatasetClass(data, genome, model.seq_len)
     validation_dataloader = torch.utils.data.DataLoader(val_dataset, 
                                                         num_workers = num_workers, 
                                                         batch_size=1000) # no shuffle important for consistent "random" negatives! 
@@ -460,7 +363,7 @@ def eval_model(model,
     model.to(device)
 
     np.random.seed(0) # for consistent randomness in validation
-    return run_one_epoch(validation_dataloader, model, optimizer = None)
+    return run_one_epoch(validation_dataloader, model, optimizer = None, regression = regression)
 
 
 def test_settings(specific_pwms, 
