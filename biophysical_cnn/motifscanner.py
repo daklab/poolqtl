@@ -9,7 +9,7 @@ import seq_utils
 
 import timeit
 
-from biophysnn import train_model, eval_model
+import biophysnn 
 from bindingdata import FastBedPeaksDataset, IPcountDataset
 
 import sklearn.metrics
@@ -135,7 +135,7 @@ def test_settings(specific_pwms,
                   train_data, 
                   validation_data,
                   genome, 
-                  seq_len_range = range(100, 701, 100), 
+                  seq_len_range = range(100, 1001, 100), 
                  base_checkpoint_dir = "checkpoints/"
                  ): 
     results = []
@@ -159,7 +159,7 @@ def test_settings(specific_pwms,
                     print(check_point_filename)
                     if os.path.isfile(check_point_filename): 
                         phys_net.load_state_dict(torch.load(check_point_filename)) 
-                        _, _, val_aucs = eval_model(phys_net, 
+                        _, _, val_auc, _, _, _ = biophysnn.eval_model(phys_net, 
                                               validation_data,
                                               genome, 
                                               check_point_filename = check_point_filename)
@@ -168,10 +168,10 @@ def test_settings(specific_pwms,
                                     seq_len, 
                                     check_point_filename, 
                                          motif_then_pos,
-                                    val_aucs,
+                                    val_auc,
                                     0.))
                         continue
-                    train_accs, val_accs, train_aucs, val_aucs = train_model(phys_net, 
+                    train_accs, val_accs, train_aucs, val_aucs = biophysnn.train_model(phys_net, 
                                                                                train_data, 
                                                                                validation_data, 
                                                                                genome, 
