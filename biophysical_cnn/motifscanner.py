@@ -159,7 +159,7 @@ def test_settings(specific_pwms,
                     print(check_point_filename)
                     if os.path.isfile(check_point_filename): 
                         phys_net.load_state_dict(torch.load(check_point_filename)) 
-                        _, _, val_auc, _, _, _ = biophysnn.eval_model(phys_net, 
+                        val_metrics, _, _, _ = biophysnn.eval_model(phys_net, 
                                               validation_data,
                                               genome, 
                                               check_point_filename = check_point_filename)
@@ -167,24 +167,26 @@ def test_settings(specific_pwms,
                                     max_over_motifs, 
                                     seq_len, 
                                     check_point_filename, 
-                                         motif_then_pos,
-                                    val_auc,
+                                    motif_then_pos,
+                                    val_metrics.auroc,
                                     0.))
                         continue
-                    train_accs, val_accs, train_aucs, val_aucs = biophysnn.train_model(phys_net, 
-                                                                               train_data, 
-                                                                               validation_data, 
-                                                                               genome, 
-                                                                               verbose = False, 
-                                                                               check_point_filename = check_point_filename,
-                                                                               lr = 0.1) 
+                    train_metrics, val_metrics = biophysnn.train_model(
+                       phys_net, 
+                       train_data, 
+                       validation_data, 
+                       genome, 
+                       verbose = False, 
+                       check_point_filename = check_point_filename,
+                       lr = 0.1
+                    ) 
                     torch.save(phys_net.state_dict(), check_point_filename) 
                     results.append((max_over_positions, 
                                     max_over_motifs, 
                                     seq_len, 
                                     check_point_filename, 
                                      motif_then_pos, 
-                                   np.max(val_aucs),
-                                   np.max(train_aucs)))
+                                   np.max([ g.auroc for g in val_metrics]),
+                                   np.max([ g.auroc for g in train_metrics])))
                     
     return pd.DataFrame(results, columns = ["posmax", "motifmax", "seqlen", "file", "motif_then_pos", "val_auc", "train_auc"])

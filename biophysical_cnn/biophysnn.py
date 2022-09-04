@@ -228,10 +228,10 @@ def run_one_epoch(dataloader,
                   optimizer = None, 
                   regression = False,
                   conc = 30.,
-                  binding_threshold = 3.):
+                  binding_threshold = 3.,
+                 verbose = False):
 
     train_flag = not (optimizer is None)
-
     torch.set_grad_enabled(train_flag)
     model.train() if train_flag else model.eval() 
 
@@ -250,7 +250,7 @@ def run_one_epoch(dataloader,
         output = output.squeeze() # remove spurious channel dimension if necessary
         
         assert(not output.isnan().any())
-        print(i, end = "\r")
+        if verbose: print("Batch", i, end = "\r")
         
         if regression: 
             input_counts = batch[1]
@@ -281,12 +281,14 @@ def run_one_epoch(dataloader,
     enrichs = np.concatenate(enrichs) if regression else None
     labels = np.concatenate(labels)
     auroc = sklearn.metrics.roc_auc_score( labels, preds )
-
+    aupr = sklearn.metrics.average_precision_score( labels, preds )
+    
     accuracy = scipy.stats.pearsonr(preds, enrichs)[0] if regression else np.mean( (preds > 0.) == labels ) 
 
-    return( np.mean(losses), accuracy, auroc, preds, labels, enrichs )
-
-
+    return( EpochMetrics( loss = np.mean(losses),
+                         acc = accuracy,
+                         auroc = auroc,
+                        aupr = aupr ), preds, labels, enrichs )
 def train_model(model, 
                 train_data, 
                 validation_data, 
@@ -324,11 +326,9 @@ def train_model(model,
     optimizer = torch.optim.Adam(parameters, amsgrad=True, **kwargs)
 
     # Training loop w/ early stopping
-    train_accs = []
-    val_accs = []
-    train_aucs = []
-    val_aucs = []
-    
+    val_metrics_list = []
+    train_metrics_list = []
+
     patience_counter = patience
     best_val_loss = np.inf
     
@@ -339,16 +339,16 @@ def train_model(model,
             model.inverse_temp_unc.data = inv_softplus(inv_temp)
         start_time = timeit.default_timer()
         np.random.seed() # seeds using current time
-        train_loss, train_acc, train_auc, _, _, _ = run_one_epoch(train_dataloader, model, optimizer, regression = regression)
+        train_metrics, _, _, _ = run_one_epoch(train_dataloader, model, optimizer, regression = regression)
         np.random.seed(0) # for consistent randomness in validation
-        val_loss, val_acc, val_auc, _, _, _ = run_one_epoch(validation_dataloader, model, optimizer = None, regression = regression)
-        train_accs.append(train_acc)
-        val_accs.append(val_acc)
-        train_aucs.append(train_auc)
-        val_aucs.append(val_auc)
-        if val_loss < best_val_loss: 
+        val_metrics, _, _, _ = run_one_epoch(validation_dataloader, model, optimizer = None, regression = regression)
+
+        val_metrics_list.append(val_metrics)
+        train_metrics_list.append(train_metrics)
+        
+        if val_metrics.loss < best_val_loss: 
             torch.save(model.state_dict(), check_point_filename)
-            best_val_loss = val_loss
+            best_val_loss = val_metrics.loss
             patience_counter = patience
         else: 
             patience_counter -= 1
@@ -357,9 +357,14 @@ def train_model(model,
                 break
         elapsed = float(timeit.default_timer() - start_time)
         if verbose: 
-            print("Epoch %i took %.2fs. Train loss: %.4f acc: %.4f auc %.3f. Val loss: %.4f acc: %.4f auc %.3f. Patience left: %i" % 
-            (epoch+1, elapsed, train_loss, train_acc, train_auc, val_loss, val_acc, val_auc, patience_counter ))
-    return train_accs, val_accs, train_aucs, val_aucs
+            print("Epoch %i (%.2fs). Train %s. Val %s. Patience: %i" % 
+                (epoch+1, 
+                 elapsed,
+                 " ".join([k+":%.4f" % v for k,v in train_metrics._asdict().items()]),
+                 " ".join([k+":%.4f" % v for k,v in val_metrics._asdict().items()]),
+                 patience_counter ))
+
+    return val_metrics_list, train_metrics_list
 
 
 def eval_model(model, 
