@@ -6,13 +6,15 @@ import pandas as pd
 def smart_open(filename, *args, **kwargs):
     return gzip.open(filename, *args, **kwargs) if filename[-2:]=="gz" else open(filename, *args, **kwargs)
 
-def loadGenotypes(genotypeFile, 
-                  posterior = True, 
-                  posterior_index = 1,
-                  maxlines = None, 
-                  get_confidence = False, 
-                  add_chr_prefix = "chr",
-                  print_every = 0):
+def loadGenotypes(
+    genotypeFile, 
+    posterior = True, # if true then directly extract dosage. if false convert genotype (GT) to dosage. 
+    posterior_index = 1, # which element of the data should we extract as the dosage? 
+    maxlines = None, 
+    get_confidence = False, 
+    add_chr_prefix = "chr",
+    print_every = 0
+):
     # For now, will assume './.' corresponds to major allele
     genotype_doses = {
         '0|0': 0.0,
@@ -40,7 +42,7 @@ def loadGenotypes(genotypeFile,
     with smart_open(genotypeFile, 'r') as genotypes:
         for idx,line in enumerate(genotypes): 
             if type(line) is bytes: line = line.decode()
-            if line[:2] == "##": continue
+            if line[:2] == "##": continue # skip header
             elems = line.strip('\n').split('\t')
             if first_line:
                 sample_names = elems[9:]
@@ -72,8 +74,13 @@ def loadGenotypes(genotypeFile,
             
             if maxlines and len(snps)>=maxlines: break
     
-    df_genotypes_1 = pd.DataFrame(data={'position':positions, 'contig':contigs, 'SNP':snps,
-                                'refAllele': alleles_1, 'altAllele': alleles_2}, index=snps)
+    df_genotypes_1 = pd.DataFrame(data={
+        'position':positions, 
+        'contig':contigs, 
+        'SNP':snps,
+        'refAllele': alleles_1,
+        'altAllele': alleles_2}, 
+        index=snps)
     df_genotypes_2 = pd.DataFrame(data=np.array(genotype_arr), index=snps, columns=sample_names)
     df_genotypes = pd.concat([df_genotypes_1, df_genotypes_2], axis=1)
     if get_confidence:

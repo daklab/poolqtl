@@ -16,7 +16,7 @@ torch_matmul = lambda x,y : (torch.tensor(x) @ torch.tensor(y)).numpy() # do we 
 def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = True):
     
     # join genotype data and input allele counts
-    merged = geno.merge(dat, on = ["variantID", "refAllele", "altAllele"])
+    merged = geno.merge(dat, on = ["variantID", "refAllele", "altAllele"]) # should we also join on contig? 
 
     # consider different defitions of ref vs alt
     geno_flip = geno.rename(columns={"altAllele" : "refAllele", "refAllele":"altAllele"})
@@ -42,7 +42,7 @@ def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = T
 
     if plot: 
         print("sum(w)=%f ideally would be 1" % w.sum())
-        combined["pred"] = torch_matmul( combined.iloc[:,5:16].to_numpy(), w )
+        combined["pred"] = torch_matmul( combined.iloc[:,sample_inds].to_numpy(), w )
         #combined["pred"] = combined.iloc[:,sample_inds].to_numpy() @  w 
 
         plt.bar(x = range(len(w)), height=w)

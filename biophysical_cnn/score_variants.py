@@ -20,8 +20,12 @@ def score_variants(phys_net,
     def get_batch(starti, flip_to_alt):
         def get_oh(i): 
             midpoint = snpdata.position.iloc[i]-1
-            seq = genome[snpdata.chrom.iloc[i]][ midpoint - context_length//2:midpoint + context_length//2]
-            #assert(seq[context_length//2] == snpdata.refAllele.iloc[i])
+            
+            left = midpoint - context_length//2
+            right = midpoint + (context_length+1)//2 # round down for even, round up for odd context length
+            
+            seq = genome[snpdata.chrom.iloc[i]][left:right]
+            assert(seq[context_length//2] == snpdata.refAllele.iloc[i])
             if flip_to_alt: 
                 seq = seq[:context_length//2] + snpdata.altAllele.iloc[i] + seq[context_length//2+1:]
                 #assert(seq[context_length//2] == snpdata.altAllele.iloc[i])

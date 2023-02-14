@@ -45,10 +45,12 @@ class Model(nn.Module):
         return self.uconc.softplus()
        
     def forward(self, y): 
-        """y is Nx2, altcount refcount"""
+        """y is N x replicates x 2, with last dimension being [altcount, refcount]
+        Returns the loglikelihood of each observation
+        """
         conc = F.softplus(self.uconc)
         bb = BetaBinomialReparam(self.beta.sigmoid()[:,None], conc, total_count = y.sum(2), eps = self.eps)
-        return bb.log_prob(y[:,:,0])
+        return bb.log_prob(y[:,:,0]) # returns the log likelihood
 
 def fit(model, y, iterations = 1500, loss_tol = 1e-5, **adam_kwargs):
     
@@ -72,7 +74,7 @@ def fit(model, y, iterations = 1500, loss_tol = 1e-5, **adam_kwargs):
 
 def fitfit(y, conc = 30., learn_conc = False, **kwargs):
     N,P,_ = y.shape
-    beta_init = (y[:,:,0].sum(1) / y.sum((1,2))).logit()
+    beta_init = (y[:,:,0].sum(1) / y.sum((1,2))).logit() # smart initialization of mean
     model = Model(beta_init, conc = conc, learn_conc = learn_conc)
     losses = fit(model, y, **kwargs)
     return(model.beta.detach(), model.uconc.detach(), model(y).detach(), losses)
@@ -80,9 +82,8 @@ def fitfit(y, conc = 30., learn_conc = False, **kwargs):
 def lrt(df, learn_conc = False, conc = 200., **kwargs):
     """
     df must have columns "refCount_input","altCount_input","refCount_IP","altCount_IP 
+    Works for replicates
     """
-     # gives nice flat null p-values
-    #conc = 5.
     
     y = torch.tensor(df.loc[:,["altCount_input","refCount_input","altCount_IP","refCount_IP"]].to_numpy())
     y = y.view(y.shape[0],2,2)
@@ -96,6 +97,7 @@ def lrt(df, learn_conc = False, conc = 200., **kwargs):
     y = y.view(y.shape[0],1,2)
     beta_IP,conc_IP,loglik_full_IP,losses = fitfit(y, conc = conc,learn_conc = learn_conc, **kwargs)
 
+    # LRT per SNP
     dev = 2. * (loglik_full_IP.squeeze() + loglik_full_input.squeeze() - loglik_null.sum(1))
     lrtp = scipy.stats.chi2(df = 1).sf(dev)
     

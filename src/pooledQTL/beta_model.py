@@ -118,17 +118,23 @@ def guide_mean_field(data):
             "IP_ratio": IP_ratio
            }
 
-def structured_guide(data):
+def structured_guide(
+    data,
+     input_conc, 
+     input_count_conc, 
+     IP_conc, 
+     IP_count_conc):
+    
     device = data.device
     
     def conc_helper(name):    
         param = pyro.param(name + "_param", lambda: torch.tensor(5., device = device), 
                            constraint=constraints.positive)
         return pyro.sample(name, dist.Delta(param))
-    input_conc = conc_helper("input_conc")
-    input_count_conc = conc_helper("input_count_conc")
-    IP_conc = conc_helper("IP_conc")
-    IP_count_conc = conc_helper("IP_count_conc")
+    if input_conc is None: input_conc = conc_helper("input_conc")
+    if input_count_conc is None: input_count_conc = conc_helper("input_count_conc")
+    if IP_conc is None: IP_conc = conc_helper("IP_conc")
+    if IP_count_conc is None: IP_count_conc = conc_helper("IP_count_conc")
     
     z1 = pyro.sample("z1", 
                     dist.Normal(torch.zeros(data.num_snps, device = device), 
@@ -174,27 +180,37 @@ def structured_guide(data):
 
 
 def fit(data, 
-       learn_concs = True, 
-      iterations = 1000,
-      num_samples = 0,
-      use_structured_guide = True
-      ):
+        input_conc = None,
+        input_count_conc = None, 
+        IP_conc = None, 
+        IP_count_conc = None,
+        iterations = 1000,
+        num_samples = 0,
+        use_structured_guide = True
+       ):
 
     two = torch.tensor(2., device = data.device)
     
     model = lambda data:  full_model_base(data, 
-         input_conc = dist.Gamma(two,two/10.) if learn_concs else 1., 
-         input_count_conc = dist.Gamma(two,two/10.) if learn_concs else 1.,
-         IP_conc = dist.Gamma(two,two/10.) if learn_concs else 1., 
-         IP_count_conc = dist.Gamma(two,two/10.) if learn_concs else 1.)
+         input_conc = dist.Gamma(two,two/10.) if (input_conc is None) else input_conc, 
+         input_count_conc = dist.Gamma(two,two/10.) if (input_count_conc is None) else input_count_conc,
+         IP_conc = dist.Gamma(two,two/10.) if (IP_conc is None) else IP_conc, 
+         IP_count_conc = dist.Gamma(two,two/10.) if (IP_count_conc is None) else IP_count_conc)
 
-    to_optimize = ["input_conc",
-                   "input_count_conc",
-                   "IP_conc",
-                   "IP_count_conc"]
+    to_optimize = []
+    if input_conc is None: to_optimize.append("input_conc")
+    if input_count_conc is None: to_optimize.append("input_count_conc")
+    if IP_conc is None: to_optimize.append("IP_conc")
+    if IP_count_conc is None: to_optimize.append("IP_count_conc")
 
     if use_structured_guide: 
-        guide = structured_guide
+        guide = lambda data: structured_guide(
+            data,
+            input_conc = input_conc, 
+            input_count_conc = input_count_conc, 
+            IP_conc = IP_conc, 
+            IP_count_conc = IP_count_conc
+        )
     else: 
         guide = AutoGuideList(model)
         guide.add(AutoDiagonalNormal(poutine.block(model, hide = to_optimize)))
@@ -290,7 +306,7 @@ def make_plots(dat_here, fdr_threshold = 0.05, insig_alpha = 0.1, sig_alpha = 0.
     return()
 
 
-def fit_and_save(dat_here, results_file, device="cpu", **kwargs): 
+def fit_and_save(dat_here, results_file, device="cpu", plot=False, **kwargs): 
     
     data = asb_data.RelativeASBdata.from_pandas(dat_here, device = device)
     
@@ -298,8 +314,9 @@ def fit_and_save(dat_here, results_file, device="cpu", **kwargs):
 
     print("Learned hyperparameters:",fit_hypers)
     
-    plt.figure(figsize=(6,4))
-    plt.plot(losses)
+    if plot: 
+        plt.figure(figsize=(6,4))
+        plt.plot(losses)
     
     dat_here = pd.concat((dat_here.reset_index(drop=True), 
                           results.reset_index(drop=True)), axis = 1 )
