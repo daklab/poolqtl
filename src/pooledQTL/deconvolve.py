@@ -40,12 +40,17 @@ def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = T
     reg_nnls.fit(X, y)
     w = reg_nnls.coef_
     if plot or outfile is not None:
-        fig, (ax1, ax2) = plt.subplots(2, figsize=(7, 11))
+        fig, (ax3, ax1, ax2) = plt.subplots(3, figsize=(7, 11))
         fig.tight_layout(pad = 4.0)
         #fig.suptitle("sum(w)=%f ideally would be 1" % w.sum())
         combined["pred"] = torch_matmul(combined.iloc[:,sample_inds].to_numpy(), w)
         #combined["pred"] = combined.iloc[:,sample_inds].to_numpy() @  w 
 
+        n_keep = np.sum(combined[combined.totalCount > total_thres].totalCount)
+        ax3.hist(combined.totalCount, log=True)
+        ax3.axvline(x=total_thres, color='r', linestyle='dashed', linewidth=1)
+        ax3.set(xlabel = "# of reads observed with SNP", ylabel = "# of SNPs",
+                title = f"{n_keep:,} SNPs with >= {total_thres} reads per SNP")
 
         ax1.set_title("sum(w)=%f ideally would be 1" % w.sum())
         ax1.bar(x = range(len(w)), height=w*100)
