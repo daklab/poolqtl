@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 
 torch_matmul = lambda x,y : (torch.tensor(x) @ torch.tensor(y)).numpy() # do we need this? apparently yes!?
 
-def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = True):
+def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = True, outfile=None):
     
     # join genotype data and input allele counts
     merged = geno.merge(dat, on = ["variantID", "refAllele", "altAllele"]) # should we also join on contig? 
@@ -39,26 +39,30 @@ def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = T
     reg_nnls = LinearRegression(positive=True, fit_intercept=False)
     reg_nnls.fit(X, y)
     w = reg_nnls.coef_
-
-    if plot: 
-        print("sum(w)=%f ideally would be 1" % w.sum())
-        combined["pred"] = torch_matmul( combined.iloc[:,sample_inds].to_numpy(), w )
+    if plot or outfile is not None:
+        fig, (ax1, ax2) = plt.subplots(2, figsize=(7, 11))
+        fig.tight_layout(pad = 4.0)
+        #fig.suptitle("sum(w)=%f ideally would be 1" % w.sum())
+        combined["pred"] = torch_matmul(combined.iloc[:,sample_inds].to_numpy(), w)
         #combined["pred"] = combined.iloc[:,sample_inds].to_numpy() @  w 
 
-        plt.bar(x = range(len(w)), height=w)
-        plt.show()
+
+        ax1.set_title("sum(w)=%f ideally would be 1" % w.sum())
+        ax1.bar(x = range(len(w)), height=w*100)
+        ax1.set(xlabel="Cell line", ylabel="% representation in sample")
 
         combined_30 = combined[combined.totalCount >= 30]
         corr,_ = scipy.stats.pearsonr(combined_30.pred, combined_30.allelic_ratio)
         R2 = corr*corr
 
-        plt.scatter(combined_30.pred, combined_30.allelic_ratio, alpha = 0.05)
-        plt.title("R2=%.3f" % R2)
-        plt.xlabel("Predicted from genotype")
-        plt.ylabel("Observed in input")
-        plt.show() 
+        ax2.scatter(combined_30.pred, combined_30.allelic_ratio, alpha = 0.05)
+        ax2.set_title("R2=%.3f" % R2)
+        ax2.set(xlabel="Predicted allelic ratio from genotype", ylabel="Observed allelic ratio in input")
+        if outfile is not None:
+            fig.savefig(outfile)
+        if not plot:
+            plt.close(fig)
         
-    return w
 
 def merge_geno_and_counts(sanger, 
                           dat, 
