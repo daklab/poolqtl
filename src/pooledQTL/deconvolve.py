@@ -68,7 +68,7 @@ def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = T
 
         ax1.set_title("sum(w)=%f ideally would be 1" % w.sum())
         ax1.bar(x = range(len(w)), height=w*100)
-        ax1.axhline(y=len(sample_inds), color='r', linestyle='dashed', linewidth=1) # red line showing uniform distr
+        ax1.axhline(y=100.0/len(sample_inds), color='r', linestyle='dashed', linewidth=1) # red line showing uniform distr
         ax1.set(xlabel="Cell line", ylabel="% representation in sample")
 
         R2 = np.nan
