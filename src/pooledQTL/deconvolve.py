@@ -48,12 +48,13 @@ def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = T
 
         n_keep = np.sum(combined[combined.totalCount > total_thres].totalCount)
         ax3.hist(combined.totalCount, log=True)
-        ax3.axvline(x=total_thres, color='r', linestyle='dashed', linewidth=1)
+        ax3.axvline(x=total_thres, color='r', linestyle='dashed', linewidth=1) # red line showing threshold
         ax3.set(xlabel = "# of reads observed with SNP", ylabel = "# of SNPs",
                 title = f"{n_keep:,} SNPs with >= {total_thres} reads per SNP")
 
         ax1.set_title("sum(w)=%f ideally would be 1" % w.sum())
         ax1.bar(x = range(len(w)), height=w*100)
+        ax1.axvline(y=len(sample_inds), color='r', linestyle='dashed', linewidth=1) # red line showing uniform distr
         ax1.set(xlabel="Cell line", ylabel="% representation in sample")
 
         combined_30 = combined[combined.totalCount >= 30]
