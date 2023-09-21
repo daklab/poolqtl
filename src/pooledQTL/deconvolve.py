@@ -60,7 +60,7 @@ def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = T
             combined["pred"] = torch_matmul(combined.iloc[:,sample_inds].to_numpy(), w)
         #combined["pred"] = combined.iloc[:,sample_inds].to_numpy() @  w 
 
-        n_keep = np.sum(combined[combined.totalCount > total_thres].totalCount)
+        n_keep = np.sum(combined.totalCount >= total_thres)
         ax3.hist(combined.totalCount, log=True)
         ax3.axvline(x=total_thres, color='r', linestyle='dashed', linewidth=1) # red line showing threshold
         ax3.set(xlabel = "# of reads observed with SNP", ylabel = "# of SNPs",
