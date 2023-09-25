@@ -79,7 +79,7 @@ def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = T
             ax2.scatter(combined_30.pred, combined_30.allelic_ratio, alpha = 0.05)
         ax2.set_title("R2=%.3f" % R2)
         ax2.set(xlabel="Predicted allelic ratio from genotype", ylabel="Observed allelic ratio in input")
-        plt.set_title(plot_title)
+        fig.suptitle(plot_title)
         if outfile is not None:
             fig.savefig(outfile)
         if not plot:
