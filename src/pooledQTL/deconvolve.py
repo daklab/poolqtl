@@ -15,7 +15,7 @@ import warnings
 
 torch_matmul = lambda x,y : (torch.tensor(x) @ torch.tensor(y)).numpy() # do we need this? apparently yes!?
 
-def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = True, outfile=None):
+def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = True, outfile=None, plot_title = ""):
     
     # join genotype data and input allele counts
     merged = geno.merge(dat, on = ["variantID", "refAllele", "altAllele"]) # should we also join on contig? 
@@ -79,6 +79,7 @@ def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = T
             ax2.scatter(combined_30.pred, combined_30.allelic_ratio, alpha = 0.05)
         ax2.set_title("R2=%.3f" % R2)
         ax2.set(xlabel="Predicted allelic ratio from genotype", ylabel="Observed allelic ratio in input")
+        plt.set_title(plot_title)
         if outfile is not None:
             fig.savefig(outfile)
         if not plot:
