@@ -15,7 +15,8 @@ import warnings
 
 torch_matmul = lambda x,y : (torch.tensor(x) @ torch.tensor(y)).numpy() # do we need this? apparently yes!?
 
-def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = True, outfile=None, plot_title = "", maf_thresh = 0.05):
+def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = True,
+               outfile=None, plot_title = "", maf_thresh = 0.05, save_data = None):
     
     # join genotype data and input allele counts
     merged = geno.merge(dat, on = ["variantID", "refAllele", "altAllele"]) # should we also join on contig? 
@@ -56,12 +57,14 @@ def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = T
         reg_nnls = LinearRegression(positive=True, fit_intercept=False)
         reg_nnls.fit(X, y)
         w = reg_nnls.coef_
+        combined["pred"] = torch_matmul(combined.iloc[:,sample_inds].to_numpy(), w)
+        combined["maf"] = maf
+    if save_data is not None:
+        combined.to_csv(save_data, "\t", index = False)
     if plot or outfile is not None:
         fig, ((ax4, ax3), (ax1, ax2)) = plt.subplots(2, 2, figsize=(11, 9))
         fig.tight_layout(pad = 4.0)
         #fig.suptitle("sum(w)=%f ideally would be 1" % w.sum())
-        if X.shape[0] > 0:
-            combined["pred"] = torch_matmul(combined.iloc[:,sample_inds].to_numpy(), w)
         #combined["pred"] = combined.iloc[:,sample_inds].to_numpy() @  w 
         
         ax4.hist(maf, log=True, bins = 20)
