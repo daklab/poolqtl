@@ -35,7 +35,9 @@ def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = T
     # remove any rows with missigness genotypes
     to_keep = np.isnan(combined.iloc[:,sample_inds]).mean(1) == 0. # keep 96%
     combined = combined[to_keep].copy()
-    maf = np.sum(combined.iloc[:,sample_inds], axis=1) / len(sample_inds)
+    maf = combined.iloc[:,sample_inds].sum(axis=1) / len(sample_inds)
+    idx = maf > 0.5
+    maf[idx] = 1-maf[idx]
 
     combined["allelic_ratio"] = combined.altCount / combined.totalCount
     
@@ -45,8 +47,6 @@ def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = T
 
     X = comb_sub.iloc[:,sample_inds].to_numpy() # dosage matrix
     y = comb_sub.allelic_ratio.to_numpy() # observed allelic proportions
-    del comb_sub
-    gc.collect()
 
     if X.shape[0] <= 0:
         w = np.array([])
