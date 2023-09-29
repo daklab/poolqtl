@@ -96,7 +96,7 @@ def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = T
             fig.savefig(outfile)
         if not plot:
             plt.close(fig)
-        
+    return w
 
 def merge_geno_and_counts(sanger, 
                           dat, 
