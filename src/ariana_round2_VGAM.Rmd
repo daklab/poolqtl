@@ -11,13 +11,13 @@ suppressPackageStartupMessages(library(data.table))
 ```
 
 ```{r}
-vcf_file <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/bgzipped_vcfs/monocyte_pool.vcf.gz.gz"
-cell_lines <- system(paste("bcftools query -l", vcf_file), intern = T)
+monocyte_vcf_file <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/bgzipped_vcfs/monocyte_pool.vcf.gz.gz"
+monocyte_cell_lines <- system(paste("bcftools query -l", vcf_file), intern = T)
 ```
 
 ```{r}
-vcf_file <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/bgzipped_vcfs/merged_ancestries_microglia.vcf.gz"
-cell_lines <- system(paste("bcftools query -l", vcf_file), intern = T)
+microglia_vcf_file <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/bgzipped_vcfs/merged_ancestries_microglia.vcf.gz"
+microglia_cell_lines <- system(paste("bcftools query -l", vcf_file), intern = T)
 ```
 
 ```{r}
