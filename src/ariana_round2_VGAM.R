@@ -9,25 +9,25 @@ suppressPackageStartupMessages(library(gridExtra))
 suppressPackageStartupMessages(library(qqman))
 
 
-geno_fix <- function (x) {
+geno_fix <- function(x) {
     switch(x,
-       "0|0"=0,
-       "1|0"=0.5,
-       "0|1"=0.5,
-       "1|1"=1, 
-       "0/0"=0,
-       "1/0"=0.5,
-       "0/1"=0.5,
-       "1/1"=1, 
-       "0 0"=0,
-       "1 0"=0.5,
-       "0 1"=0.5,
-       "1 1"=1, 
-       "00"=0,
-       "10"=0.5,
-       "01"=0.5,
-       "11"=1, 
-           NA)
+           "0|0" = 0,
+           "1|0" = 0.5,
+           "0|1" = 0.5,
+           "1|1" = 1,
+           "0/0" = 0,
+           "1/0" = 0.5,
+           "0/1" = 0.5,
+           "1/1" = 1,
+           "0 0" = 0,
+           "1 0" = 0.5,
+           "0 1" = 0.5,
+           "1 1" = 1,
+           "00" = 0,
+           "10" = 0.5,
+           "01" = 0.5,
+           "11" = 1,
+            NA)
 }
 
 get_cell_lines_from_vcf <- function(vcf_file) {
@@ -144,7 +144,7 @@ run_model <- function(geno, cell_lines, obs_file, out_file) {
 
     mu <- as.double(mu)
 
-    pvals <- sapply(1:length(mu), function(i) {
+    pvals <- sapply(seq_along(mu), function(i) {
         crit1 <- obs_sub$totalCount[i]*mu[i]
         crit2 <- obs_sub$altCount[i]
         if (is.na(crit1) | is.na(crit2)) {
@@ -179,15 +179,13 @@ run_model <- function(geno, cell_lines, obs_file, out_file) {
     hist(-log10(pvals))
     hist(-log10(qvals))
 
-    grid.arrange(arrangeGrob(tableGrob(data.table(rho, conc, 
-    `# q < .05` = sum(qvals < 0.05, na.rm=TRUE),
-    `# q < .01` = sum(qvals < 0.01, na.rm=TRUE)
-    )), ncol=1))
+    grid.arrange(arrangeGrob(tableGrob(data.table(rho, conc, `# q < .05` = sum(qvals < 0.05, na.rm=TRUE),
+                                                  `# q < .01` = sum(qvals < 0.01, na.rm=TRUE))), ncol=1))
     cat(paste0("Concentration = ", conc, "\n"))
     
     results <- mutate(obs_sub,p_value = pvals,
         qval = qvals,
-        direction = sapply(1:length(mu), function(i) {
+        direction = sapply(seq_along(mu), function(i) {
             crit1 <- obs_sub$totalCount[i]*mu[i]
             crit2 <- obs_sub$altCount[i]
             if (is.na(crit1) | is.na(crit2)) {
@@ -223,7 +221,7 @@ runMonocytes <- function() {
     cell_lines <- get_cell_lines_from_vcf(monocyte_vcf_file)
     geno <- read_feather_file(monocyte_feather, cell_lines)
     pdfs <- str_replace(monocyte_out_files, "model_results.txt$", "model_output.pdf")
-    for (i in 1:length(monocyte_obs_files)) {
+    for (i in seq_along(monocyte_obs_files)) {
         if (i == 4) next()
         pdf(pdfs[i])
         cat(paste0("\nrun_model(geno, cell_lines, ",monocyte_obs_files[i], ", ", monocyte_out_files[i], ")\n"))
