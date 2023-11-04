@@ -217,7 +217,9 @@ runMonocytes <- function() {
     monocyte_vcf_file <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/bgzipped_vcfs/monocyte_pool.vcf.gz.gz"
     monocyte_feather <- "~/projects/bqtls/SecondRound_bQTLs/VCF_files/feathers/monocyte_pool.feather"
     monocyte_obs_files <- list.files("~/projects/bqtls/SecondRound_bQTLs/Monocytes", "*mono_allelic_out.txt$", full.names = TRUE)
-    monocyte_out_files <- paste0("~/projects/bqtls/SecondRound_bQTLs/asb/Monocyte_", basename(monocyte_obs_files)%>%str_extract("^[^_]+")%>%paste0(".model_results.txt"))
+    monocyte_out_files <- paste0("~/projects/bqtls/SecondRound_bQTLs/asb/Monocyte_", 
+                                 basename(monocyte_obs_files)%>%str_extract("^[^_]+")%>%
+                                    paste0(".model_results.txt"))
     cell_lines <- get_cell_lines_from_vcf(monocyte_vcf_file)
     geno <- read_feather_file(monocyte_feather, cell_lines)
     pdfs <- str_replace(monocyte_out_files, "model_results.txt$", "model_output.pdf")
