@@ -57,7 +57,7 @@ read_feather_file <- function(feather_file, cell_lines) {
     return(geno)
 }
 
-run_model <- function(geno, cell_lines, obs_file, out_file) {
+run_model <- function(geno, cell_lines, obs_file, out_file, deconv_out=NULL) {
     obs <- fread(obs_file, sep = "\t", header = F, skip = 1) 
     obs <- obs[, 1:(ncol(obs) - 1)]
     colnames(obs) <- unlist(strsplit(readLines(obs_file, 1), "\t"))
@@ -96,9 +96,15 @@ run_model <- function(geno, cell_lines, obs_file, out_file) {
     conv_fit <- lm(y ~ 0 + X)
     plot(coef(conv_fit), main = "Estimated representations per cell line in pool", xlab = "Cell line index", ylab = "Estimated ratio")
     abline(h = 1/length(cell_lines), col = 'red', lty='dashed')
-    w <- coef(conv_fit)
-    stopifnot(all(paste0('X', cell_lines) == names(w)))
+    if (length(cell_lines) > 1) {
+      w <- coef(conv_fit)
+    } else {
+      w <- 1
+    }
+    #stopifnot(all(paste0('X', cell_lines) == names(w)))
     names(w) <- cell_lines
+    if (!is.null(deconv_out))
+      write_tsv(data.table(cell_line=cell_lines, estimated_representation=w), deconv_out)
 
 
     afs_expected <- geno_sub$AF
@@ -126,7 +132,11 @@ run_model <- function(geno, cell_lines, obs_file, out_file) {
     #         y = "Allelic ratio observed in CHiP-seq data (r_IP)", 
     #        title = paste0("R² = ", formatC(cor(observed_allelic_ratio, mu)^2, digits = 3)))
 
-    fit <- vglm(cbind(altCount, refCount) ~ identitylink(offset(mu)), betabinomial(lmu = identitylink, lrho = identitylink), obs_sub, crit = "coef")
+    if (length(cell_lines) == 1) {
+      fit <- vglm(cbind(altCount, refCount) ~ 1, betabinomial(lmu = identitylink, lrho = identitylink), obs_sub, crit = "coef")
+    } else {
+      fit <- vglm(cbind(altCount, refCount) ~ identitylink(offset(mu)), betabinomial(lmu = identitylink, lrho = identitylink), obs_sub, crit = "coef")
+    }
     # Uses the mu to predict a 2-dimensional vector of ref and alt
     # Automatically conditions on alt_count + ref_count
     # rho = 1 / (1 + alpha + beta)
@@ -251,6 +261,71 @@ runMicroglia <- function() {
             run_model(geno, cell_lines, microglia_obs_files[i], microglia_out_files[i])
         }, error=function(e) { message(e) }, 
         finally = function(...) { dev.off(); next(); })
+        dev.off()
+    }
+    rm(geno)
+    for (i in 1:10) { invisible(gc()) };
+}
+
+runMicroglia <- function() {
+    microglia_vcf_file <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/bgzipped_vcfs/merged_ancestries_microglia.vcf.gz"
+    microglia_feather <- "~/projects/bqtls/SecondRound_bQTLs/VCF_files/feathers/merged_ancestries_microglia.feather"
+    microglia_obs_files <- list.files("~/projects/bqtls/SecondRound_bQTLs/Microglia_All_Ancestries", "*allelic_out.txt$", full.names = TRUE)
+    microglia_out_files <- paste0("~/projects/bqtls/SecondRound_bQTLs/asb/Microglia_", basename(microglia_obs_files)%>%str_extract("^[^_]+")%>%paste0(".model_results.txt"))
+    cell_lines <- get_cell_lines_from_vcf(microglia_vcf_file)
+    geno <- read_feather_file(microglia_feather, cell_lines)
+    pdfs <- str_replace(microglia_out_files, "model_results.txt$", "model_output.pdf")
+    for (i in 1:length(microglia_obs_files)) {
+        if (i == 2) next()
+        pdf(pdfs[i])
+        cat(paste0("\nrun_model(geno, cell_lines, ",microglia_obs_files[i], ", ", microglia_out_files[i], ")\n"))
+        tryCatch({
+            run_model(geno, cell_lines, microglia_obs_files[i], microglia_out_files[i])
+        }, error=function(e) { message(e) }, 
+        finally = function(...) { dev.off(); next(); })
+        dev.off()
+    }
+    rm(geno)
+    for (i in 1:10) { invisible(gc()) };
+}
+runMicrogliaEur <- function() {
+    microglia_vcf_file <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/bgzipped_vcfs/microglia_pool_EURonly.vcf.gz"
+    microglia_feather <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/feathers/microglia_pool_EURonly.feather"
+    microglia_obs_files <- list.files("/home/dmeyer/projects/bqtls/SecondRound_bQTLs/Microglia_European_only/", "*allelic_out.txt$", full.names = TRUE)
+    tfs <- basename(microglia_obs_files)%>%str_extract("^[^_]+")
+    microglia_out_files <- paste0("~/projects/bqtls/SecondRound_bQTLs/asb/Microglia_EUR_", tfs, ".model_results.txt")
+    deconv_out_files <- paste0("/home/dmeyer/projects/bqtls/SecondRound_bQTLs/deconvolve_data/Microglia_EUR_", tfs, ".deconvolution.txt")
+    cell_lines <- get_cell_lines_from_vcf(microglia_vcf_file)
+    geno <- read_feather_file(microglia_feather, cell_lines)
+    pdfs <- str_replace(microglia_out_files, "model_results.txt$", "model_output.pdf")
+    
+    for (i in 1:length(microglia_obs_files)) {
+        if (i == 2) next()
+        pdf(pdfs[i])
+        cat(paste0("\nrun_model(geno, cell_lines, ",microglia_obs_files[i], ", ", microglia_out_files[i], ")\n"))
+        run_model(geno, cell_lines, microglia_obs_files[i], microglia_out_files[i], deconv_out = deconv_out_files[i])
+        dev.off()
+    }
+    rm(geno)
+    for (i in 1:10) { invisible(gc()) };
+}
+
+runSingleDonor <- function() {
+    vcf_file <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/bgzipped_vcfs/microglia_SingleDonor.vcf.gz"
+    feather <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/feathers/microglia_SingleDonor.feather"
+    obs_files <- list.files("/home/dmeyer/projects/bqtls/SecondRound_bQTLs/Microglia_Single_Donor_PU1/", "*allelic_out.txt$", full.names = TRUE)
+    tfs <- "PU1"
+    out_files <- paste0("~/projects/bqtls/SecondRound_bQTLs/asb/Microglia_Single_Donor_", tfs, ".model_results.txt")
+    deconv_out_files <- paste0("/home/dmeyer/projects/bqtls/SecondRound_bQTLs/deconvolve_data/Microglia_Single_Donor_", tfs, ".deconvolution.txt")
+    cell_lines <- get_cell_lines_from_vcf(vcf_file)
+    geno <- read_feather_file(feather, cell_lines)
+    pdfs <- str_replace(out_files, "model_results.txt$", "model_output.pdf")
+    
+    for (i in 1:length(obs_files)) {
+        if (i == 2) next()
+        pdf(pdfs[i])
+        cat(paste0("\nrun_model(geno, cell_lines, ",obs_files[i], ", ", out_files[i], ")\n"))
+        run_model(geno, cell_lines, obs_files[i], out_files[i], deconv_out = deconv_out_files[i])
         dev.off()
     }
     rm(geno)

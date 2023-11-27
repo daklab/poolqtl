@@ -1,29 +1,50 @@
 require(tidyverse)
 require(doMC)
+#require(data.table)
 
-ase_dir = "/gpfs/commons/home/mschertzer/pilot_pool/allelic/"
+results <- read_tsv("/home/dmeyer/projects/bqtls/SecondRound_bQTLs/asb/Monocyte_PU1.model_results.txt")
+deconv <-     read_tsv("/home/dmeyer/projects/bqtls/SecondRound_bQTLs/deconvolve_data/Monocytes_PU1.deconvolution.txt")
+deconv_res <- read_tsv("/home/dmeyer/projects/bqtls/SecondRound_bQTLs/deconvolve_data/Monocytes_PU1.combined_data.txt")
 
-input_dat = read_tsv(paste0(ase_dir, "input-rep1_allelic.out")) 
+joined <-
+  rename(deconv_res, position = 1, contig = 2)%>%
+  left_join(
+    results,
+    #by = c("position", "contig", "variantID")
+  )%>%
+  select(-lowMAPQDepth, -lowBaseQDepth, -rawDepth, -otherBases, -position,
+         -contig_y, -position_y)%>%
+  mutate(predAlt = round(totalCount * pred),
+         predRef = totalCount - predAlt)
+joined_sub <- filter(joined, totalCount >30, maf >= 0.05)
+  
+#ase_dir = "~/projects/bqtls/SecondRound_bQTLs/Monocytes"
+#input_dat = read_tsv(paste0(ase_dir, "/PU1_mono_allelic_out.txt")) 
+#ip_dat = read_tsv(paste0(ase_dir, "/PU1_mono_allelic_out.txt"))
+#deconv_dat = read_tsv("~/projects/bqtls/SecondRound_bQTLs/deconvolve_data/Monocytes_PU1.deconvolution.txt")
+#ase_dir = "/gpfs/commons/home/mschertzer/pilot_pool/allelic/"
+#input_dat = read_tsv(paste0(ase_dir, "input-rep1_allelic.out")) 
+#ip_dat = read_tsv(paste0(ase_dir, "hnrnpa1-rep1_allelic.out"))
 
-ip_dat = read_tsv(paste0(ase_dir, "hnrnpa1-rep1_allelic.out"))
-
-min_ip_total_count = 20 
-min_input_total_count = 10 
-min_input_per_allele = 5
-
-ip = ip_dat %>% filter(totalCount >= min_ip_total_count) %>% 
-    select(-lowMAPQDepth, -lowBaseQDepth, -rawDepth, -otherBases, -position) 
-input = input_dat %>% filter(totalCount >= min_input_total_count) %>% 
-    select(-lowMAPQDepth, -lowBaseQDepth, -rawDepth, -otherBases, -position) 
-
-joined = inner_join(input, ip, by = c("contig", "variantID", "refAllele", "altAllele"), suffix = c(".input", ".ip") )
-joined_sub = joined %>% filter(altCount.input >= min_input_per_allele, refCount.input >= min_input_per_allele)
-
+#min_ip_total_count = 20 
+#min_input_total_count = 10 
+#min_input_per_allele = 5
+#
+#ip = ip_dat %>% filter(totalCount >= min_ip_total_count) %>% 
+#    select(-lowMAPQDepth, -lowBaseQDepth, -rawDepth, -otherBases, -position) 
+#input = input_dat %>% filter(totalCount >= min_input_total_count) %>% 
+#    select(-lowMAPQDepth, -lowBaseQDepth, -rawDepth, -otherBases, -position) 
+#
+#joined = inner_join(input, ip, by = c("contig", "variantID", "refAllele", "altAllele"), suffix = c(".input", ".ip") )
+#joined_sub = joined %>% filter(altCount.input >= min_input_per_allele, refCount.input >= min_input_per_allele)
+#
 sum_stats = foreach(i = 1:nrow(joined_sub), .combine = bind_rows) %dopar% {
     here = joined_sub[i,]
-    mat = matrix(c(here$refCount.ip, here$altCount.ip, here$refCount.input, here$altCount.input), 2)
-    ft = fisher.test(mat)
-    lor_ci = log(ft$conf.int)
+    #predAlt = round(here$totalCount * here$pred)
+    #predRef = here$totalCount - predAlt
+    
+    bt = binom.test(c(here$altCount, here$refCount), p = here$pred)
+    lor_ci = log(bt$conf.int)
     tibble( lor_mean = mean(lor_ci),     
             lor_se = (lor_ci[2] - lor_ci[1])/4 )
 }
@@ -34,8 +55,10 @@ ash_result = ashr::ash(sum_stats$lor_mean, sum_stats$lor_se)
 
 sample_g = function(size, g) {
     comp = sample.int( n=length(g$pi), size = size, prob = g$pi, replace = T )
-    a = g$a[comp]
-    a + runif(size) * (g$b[comp]-a)
+    # Which component we're sampling each beta from
+    # beta is a length(size) vector
+      a = g$a[comp] # length k vector of the starts; get the correct a for this
+    a + runif(size) * (g$b[comp]-a) # sample from uniform starting from a, end at b
 }
 
 my_rpois = function(x) rpois(length(x), x)
@@ -64,21 +87,24 @@ res_ = foreach(true_or = c(1.1), .combine = bind_rows) %do% {
     foreach(input_scale_factor = c(1,2,5,10,20), .combine = bind_rows) %do% {
 
         sim_dat = joined_sub %>% head(5000) %>%
-            mutate( input_alt_prop = altCount.input / totalCount.input, 
-                                         input_or = altCount.input / refCount.input, 
+            mutate( input_alt_prop = predAlt / totalCount, 
+                                         input_or = predAlt / predRef, 
                                #ip_alt_prop = altCount.ip / totalCount.ip, 
-                               totalCount.ip = my_rpois( totalCount.ip * ip_scale_factor ), 
-                               totalCount.input = my_rpois( totalCount.input * input_scale_factor ),
-                               altCount.input = rbinom(n(), totalCount.input, input_alt_prop),
+                               totalCount.ip = my_rpois( totalCount * ip_scale_factor ), 
+                               totalCount.input = my_rpois( totalCount * input_scale_factor ),
+                               altCount.input = rbinom(n(), totalCount, input_alt_prop),
                                refCount.input = totalCount.input - altCount.input,
-                               #input_or = altCount.input / totalCount.input, 
-                               #true_or = exp(sample_g(n(), ash_result$fitted_g)), 
-                               true_or = true_or, 
+                               input_or = altCount.input / totalCount.input, 
+                    
+                               # Question: Should this be the true OR from the IP data?
+                               true_or = exp(sample_g(n(), ash_result$fitted_g)), 
+                               #true_or = true_or, 
                                ip_or = input_or * true_or, 
                                altCount.ip = rbinom(n(), totalCount.ip, ip_or / (ip_or + 1)),
                                refCount.ip = totalCount.ip - altCount.ip )
     
         pv = foreach(i = 1:nrow(sim_dat), .combine = c) %dopar% {
+            #binom.test(c(here$altCount, here$refCount), p = here$pred)$p.value
             here = sim_dat[i,]
             mat = matrix(c(here$refCount.ip, here$altCount.ip, here$refCount.input, here$altCount.input), 2)
             fisher.test(mat)$p.value

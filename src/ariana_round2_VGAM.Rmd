@@ -16,8 +16,11 @@ monocyte_cell_lines <- system(paste("bcftools query -l", vcf_file), intern = T)
 ```
 
 ```{r}
-microglia_vcf_file <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/bgzipped_vcfs/merged_ancestries_microglia.vcf.gz"
-microglia_cell_lines <- system(paste("bcftools query -l", vcf_file), intern = T)
+#microglia_vcf_file <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/bgzipped_vcfs/merged_ancestries_microglia.vcf.gz"
+#microglia_cell_lines <- system(paste("bcftools query -l", vcf_file), intern = T)
+vcf_file <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/bgzipped_vcfs/microglia_pool_EURonly.vcf.gz"
+vcf_file <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/bgzipped_vcfs/microglia_SingleDonor.vcf.gz"
+cell_lines <- system(paste("bcftools query -l", vcf_file), intern = T)
 ```
 
 ```{r}
@@ -41,7 +44,11 @@ for (x in cell_lines) {
 ```
 
 ```{r}
-write_feather(geno, "~/projects/bqtls/SecondRound_bQTLs/VCF_files/feathers/merged_ancestries_microglia.feather")
+write_feather(geno, "~/projects/bqtls/SecondRound_bQTLs/VCF_files/feathers/microglia_SingleDonor.feather")
+```
+
+```{r}
+write_feather(geno, "~/projects/bqtls/SecondRound_bQTLs/VCF_files/feathers/microglia_pool_EURonly.feather")
 ```
 
 ```{r}
