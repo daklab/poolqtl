@@ -1,0 +1,9 @@
+linters: linters_with_defaults( 
+    line_length_linter(140), 
+    indentation_linter(indent = 4L),
+    object_usage_linter = NULL,
+    commented_code_linter = NULL)
+exclusions: list(
+    "src/ariana_round2_VGAM.ipynb",
+    "ariana_round2_VGAM.ipynb")
+encoding: "UTF-8"

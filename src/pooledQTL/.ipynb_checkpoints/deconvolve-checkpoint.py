@@ -15,39 +15,34 @@ import warnings
 
 torch_matmul = lambda x,y : (torch.tensor(x) @ torch.tensor(y)).numpy() # do we need this? apparently yes!?
 
-def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = True,
-               outfile=None, plot_title = "", maf_thresh = 0.05, save_data = None):
+def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = True, outfile=None):
     
     # join genotype data and input allele counts
     merged = geno.merge(dat, on = ["variantID", "refAllele", "altAllele"]) # should we also join on contig? 
 
-    
     # consider different defitions of ref vs alt
-    #geno_flip = geno.rename(columns={"altAllele" : "refAllele", "refAllele":"altAllele"})
-    #geno_flip.iloc[:,sample_inds] = 1. - geno_flip.iloc[:,sample_inds]
-    #merged_flip = geno_flip.merge(dat, on = ["variantID", "refAllele", "altAllele"])
-    #del geno_flip
-    #gc.collect()
-    #combined = pd.concat((merged,merged_flip), axis=0) # this handles the misordering of alt/ref correctly
-    combined = merged
-    #del merged_flip
+    geno_flip = geno.rename(columns={"altAllele" : "refAllele", "refAllele":"altAllele"})
+    geno_flip.iloc[:,sample_inds] = 1. - geno_flip.iloc[:,sample_inds]
+    merged_flip = geno_flip.merge(dat, on = ["variantID", "refAllele", "altAllele"])
+    del geno_flip
+    gc.collect()
+    combined = pd.concat((merged,merged_flip), axis=0) # this handles the misordering of alt/ref correctly
+    del merged_flip
     gc.collect()
     
     # remove any rows with missigness genotypes
     to_keep = np.isnan(combined.iloc[:,sample_inds]).mean(1) == 0. # keep 96%
     combined = combined[to_keep].copy()
-    maf = combined.iloc[:,sample_inds].sum(axis=1) / len(sample_inds)
-    idx = maf > 0.5
-    maf[idx] = 1-maf[idx]
 
     combined["allelic_ratio"] = combined.altCount / combined.totalCount
     
     # only perform deconv using SNPs with >total_thres total counts
-    snp_idx = (combined.totalCount >= total_thres) & (maf >= maf_thresh)
-    comb_sub = combined[snp_idx].copy()
+    comb_sub = combined[combined.totalCount >= total_thres].copy()
 
     X = comb_sub.iloc[:,sample_inds].to_numpy() # dosage matrix
     y = comb_sub.allelic_ratio.to_numpy() # observed allelic proportions
+    del comb_sub
+    gc.collect()
 
     if X.shape[0] <= 0:
         w = np.array([])
@@ -57,25 +52,19 @@ def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = T
         reg_nnls = LinearRegression(positive=True, fit_intercept=False)
         reg_nnls.fit(X, y)
         w = reg_nnls.coef_
-        combined["pred"] = torch_matmul(combined.iloc[:,sample_inds].to_numpy(), w)
-        combined["maf"] = maf
-    if save_data is not None:
-        combined.to_csv(save_data, "\t", index = False)
     if plot or outfile is not None:
-        fig, ((ax4, ax3), (ax1, ax2)) = plt.subplots(2, 2, figsize=(11, 9))
+        fig, (ax3, ax1, ax2) = plt.subplots(3, figsize=(7, 11))
         fig.tight_layout(pad = 4.0)
         #fig.suptitle("sum(w)=%f ideally would be 1" % w.sum())
+        if X.shape[0] > 0:
+            combined["pred"] = torch_matmul(combined.iloc[:,sample_inds].to_numpy(), w)
         #combined["pred"] = combined.iloc[:,sample_inds].to_numpy() @  w 
-        
-        ax4.hist(maf, log=True, bins = 20)
-        ax4.axvline(x=maf_thresh, color='r', linestyle='dashed', linewidth=1)
-        ax4.set(xlabel = "MAF in village", ylabel = "# of SNPs", title=f"{np.sum(maf >= maf_thresh):,} SNPs with MAF >= {maf_thresh}")
 
-        n_keep = np.sum((combined.totalCount >= total_thres) & (maf >= maf_thresh))
-        ax3.hist(combined.totalCount[maf >= maf_thresh], log=True)
+        n_keep = np.sum(combined[combined.totalCount > total_thres].totalCount)
+        ax3.hist(combined.totalCount, log=True)
         ax3.axvline(x=total_thres, color='r', linestyle='dashed', linewidth=1) # red line showing threshold
         ax3.set(xlabel = "# of reads observed with SNP", ylabel = "# of SNPs",
-                title = f"{n_keep:,} SNPs with >= {total_thres} reads per SNP and MAF >= {maf_thresh}")
+                title = f"{n_keep:,} SNPs with >= {total_thres} reads per SNP")
 
         ax1.set_title("sum(w)=%f ideally would be 1" % w.sum())
         ax1.bar(x = range(len(w)), height=w*100)
@@ -83,20 +72,18 @@ def deconvolve(geno, dat, sample_inds = range(5,16), total_thres = 100, plot = T
         ax1.set(xlabel="Cell line", ylabel="% representation in sample")
 
         R2 = np.nan
-        if sum(snp_idx) > 0:
-            comb_sub = combined[snp_idx]
-            corr,_ = scipy.stats.pearsonr(comb_sub.pred, comb_sub.allelic_ratio)
+        if X.shape[0] > 0:
+            combined_30 = combined[combined.totalCount >= 30]
+            corr,_ = scipy.stats.pearsonr(combined_30.pred, combined_30.allelic_ratio)
             R2 = corr*corr
-            ax2.scatter(comb_sub.pred, comb_sub.allelic_ratio, alpha = 0.05)
+            ax2.scatter(combined_30.pred, combined_30.allelic_ratio, alpha = 0.05)
         ax2.set_title("R2=%.3f" % R2)
-        ax2.set(xlabel="Predicted baseline allelic ratio", ylabel="Observed allelic ratio in input")
-        
-        fig.suptitle(plot_title)
+        ax2.set(xlabel="Predicted allelic ratio from genotype", ylabel="Observed allelic ratio in input")
         if outfile is not None:
             fig.savefig(outfile)
         if not plot:
             plt.close(fig)
-    return w
+        
 
 def merge_geno_and_counts(sanger, 
                           dat, 

@@ -1,0 +1,427 @@
+---
+title: An R Markdown document converted from "ariana_round2_VGAM.ipynb"
+output: html_document
+---
+
+```{r}
+suppressPackageStartupMessages(library(VGAM))
+suppressPackageStartupMessages(library(arrow))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(data.table))
+```
+
+```{r}
+monocyte_vcf_file <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/bgzipped_vcfs/monocyte_pool.vcf.gz.gz"
+monocyte_cell_lines <- system(paste("bcftools query -l", vcf_file), intern = T)
+```
+
+```{r}
+#microglia_vcf_file <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/bgzipped_vcfs/merged_ancestries_microglia.vcf.gz"
+#microglia_cell_lines <- system(paste("bcftools query -l", vcf_file), intern = T)
+vcf_file <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/bgzipped_vcfs/microglia_pool_EURonly.vcf.gz"
+vcf_file <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/bgzipped_vcfs/microglia_SingleDonor.vcf.gz"
+cell_lines <- system(paste("bcftools query -l", vcf_file), intern = T)
+```
+
+```{r}
+geno = fread(cmd = paste("bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%ID\t%AC\t%AN\t%AF[\t%GT]\n'", vcf_file), header = F, 
+                  col.names = c("CHROM", "POS", "REF", "ALT", "ID", "AC", "AN", "AF", cell_lines))
+geno_fix <- function (x) {
+    switch(x,
+       "0|0"=0,
+       "1|0"=0.5,
+       "0|1"=0.5,
+       "1|1"=1, 
+       "0/0"=0,
+       "1/0"=0.5,
+       "0/1"=0.5,
+       "1/1"=1, 
+           NA)
+}
+for (x in cell_lines) {
+    geno[[x]] <- sapply(geno[[x]], geno_fix)
+}
+```
+
+```{r}
+write_feather(geno, "~/projects/bqtls/SecondRound_bQTLs/VCF_files/feathers/microglia_SingleDonor.feather")
+```
+
+```{r}
+write_feather(geno, "~/projects/bqtls/SecondRound_bQTLs/VCF_files/feathers/microglia_pool_EURonly.feather")
+```
+
+```{r}
+setDT(geno)
+```
+
+```{r}
+geno <- read_feather("~/projects/bqtls/SecondRound_bQTLs/VCF_files/feathers/monocyte_pool.feather", col_select = NULL, as_data_frame = TRUE, mmap = TRUE)
+setDT(geno)
+```
+
+```{r}
+geno <- read_feather("~/projects/bqtls/SecondRound_bQTLs/VCF_files/feathers/merged_ancestries_microglia.feather", col_select = NULL, as_data_frame = TRUE, mmap = TRUE)
+setDT(geno)
+```
+
+```{r}
+head(geno)
+```
+
+```{r}
+geno <- mutate(geno, 
+               AC = apply(geno[,..cell_lines], 1, function(x) { sum(x[!is.na(x)]) }), .after = "altAllele")%>%
+        mutate(AF = AC / length(cell_lines), .after = "AC")%>%
+        mutate(MAF = ifelse(AF > 0.5, 1-AF, AF), .after = "AC")
+```
+
+```{r}
+head(geno)
+```
+
+```{r}
+geno_flipped <- mutate(geno, AC = length(cell_lines) - AC, AF = 1-AF, tmp = refAllele, REF=altAllele)%>%mutate(ALT = tmp)%>%select(-tmp)%>%
+    mutate(ID = paste(contig, position, refAllele, altAllele, sep=":"))
+```
+
+```{r}
+obs_file <- "~/projects/bqtls/SecondRound_bQTLs/Monocytes/PU1_mono_allelic_out.txt"
+```
+
+```{r}
+obs_file <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/Microglia_All_Ancestries/PU1_ALL_mic_allelic_out.txt"
+```
+
+```{r}
+obs <- fread(obs_file, sep = "\t", header = F, skip = 1) 
+obs <- obs[,1:(ncol(obs)-1)]
+colnames(obs) <- unlist(strsplit(readLines(obs_file, 1), "\t"))
+```
+
+```{r}
+nrow(obs[totalCount >= 100])
+```
+
+```{r}
+if (!all(obs$variantID %in% geno$variantID)) {
+    stop("Allele flipping in", obs_file)
+}
+```
+
+```{r}
+if (!all(obs$variantID %in% c(geno$varinatID, geno_flipped$variantID))) {
+    stop("EEK")
+}
+```
+
+## Do deconvolution
+
+I believe that it works in the following way:
+1. We learn representations of cell lines from CHIP seq variant abundances (learn mixing ratios that best estimate final allele counts)
+2. We use this learned representation vector to estimate new AFs
+3. We look for variants that are skewed in some unexpected way
+
+```{r}
+total_thresh <- 30
+maf_thresh <- 0.05
+obs_sub <- obs[(totalCount >= total_thresh) & (totalCount != refCount) & (totalCount != altCount)]
+geno_sub <- geno[(MAF >= maf_thresh)]
+variants_keep <- intersect(obs_sub$variantID, geno_sub$variantID)
+obs_sub <- obs_sub[match(variants_keep, variantID)]
+geno_sub <- geno[match(variants_keep, variantID)]
+```
+
+```{r}
+X <- as.matrix(geno[match(variants_keep, variantID), ..cell_lines])
+dim(X)
+```
+
+```{r}
+plot(density(geno$MAF), main = paste(nrow(X), "variants retained with MAF >= 0.05"))
+abline(v=0.05, col='red', lty='dashed')
+```
+
+```{r}
+# observed allelic ratios
+y <- with(obs_sub, altCount / totalCount)
+length(y)
+```
+
+```{r}
+library(ggplot2)
+```
+
+```{r}
+ggplot(obs, aes(x = log10(totalCount))) +  theme_linedraw()+
+geom_histogram(bins = 20) +
+scale_y_log10()+
+geom_vline(xintercept = log10(100), col='red', lty='dashed')+
+labs(title = nrow(obs[totalCount >= 100])%>%paste("variants with > 100 observations"))
+```
+
+```{r}
+stopifnot(all(!is.na(y)))
+stopifnot(all(is.numeric(y)))
+```
+
+```{r}
+fit <- lm(y ~ 0+X)
+```
+
+```{r}
+plot(coef(fit))
+abline(h = 1/length(cell_lines), col = 'red', lty='dashed')
+```
+
+```{r}
+w <- coef(fit)
+stopifnot(all(paste0('X', cell_lines) == names(w)))
+names(w) <- cell_lines
+```
+
+```{r}
+afs_expected <- geno_sub$AF
+```
+
+```{r}
+# Multiply each row of X by w and sum to get predicted AFs
+# so  X %*% x
+mu = X  %*% w
+```
+
+```{r}
+min(mu,na.rm=T)
+max(mu,na.rm=T)
+```
+
+```{r}
+mu
+```
+
+```{r}
+hist(mu)
+```
+
+```{r}
+data.frame(mu, afs_expected)%>%
+ggplot(aes(x = afs_expected, y = mu)) + 
+geom_point(alpha = 0.5) +
+theme_linedraw()+
+geom_smooth()+
+labs(x = "Allelic ratio if uniform distribution", y = "Predicted allelic ratio")
+```
+
+```{r}
+# Then we also want to plot predicted allelic ratio against ACTUAL allelic ratio
+observed_allelic_ratio <- obs_sub$altCount / obs_sub$totalCount
+
+ggplot(data.frame(observed_allelic_ratio, predicted_allelic_ratio = mu),
+       aes(x = observed_allelic_ratio, y = mu)) +
+geom_point(alpha = 0.5) +
+geom_smooth(method=lm, formula = y ~ x, se = TRUE) +
+theme_linedraw()+
+labs(x = "Allelic ratio observed in CHiP-seq data (r_IP)", y = "Allelic ratio predicted (rhat_DNA)", title = paste0("R = ", formatC(cor(observed_allelic_ratio, mu)^2, digits = 3)))
+```
+
+## Then run beta model
+
+## Fit Betabinomial distribution to $y_i | n_i$
+
+Prior: $$r_{\text{IP}} \vert \hat{r}_D \sim \text{Beta}(\mu = \hat{r}_D, c_{\text{IP}})$$
+
+Estimate $$y_i \vert n_i \sim \text{BB}(\mu = \hat{r}_D, c_{\text{IP}}')$$
+
+```{r}
+fit <- vglm(cbind(altCount, refCount) ~ identitylink(offset(mu)), betabinomial(lmu = identitylink, lrho = identitylink), obs_sub, crit = "coef")
+# Uses the mu to predict a 2-dimensional vector of ref and alt
+# Automatically conditions on alt_count + ref_count
+# rho = 1 / (1 + alpha + beta)
+# what david wants conc = (1-rho)/rho
+# rho is not actually concentration (called the correlation parameter)
+```
+
+```{r}
+# rho if 0 is normal distribution
+```
+
+```{r}
+coef(fit, matrix = TRUE)
+```
+
+```{r}
+rho <- coef(fit, matrix = TRUE)[1,2]
+conc <- (1-rho)/rho
+```
+
+```{r}
+mu <- as.double(mu)
+```
+
+```{r}
+conc
+```
+
+Notes from meeting with David 10/2/23
+* if the concentration is like 300 then it's almost binomial, not beta-binomial
+* 10-50 common for seq dataobs_sub
+* low 10s is surprisingly noisy
+
+```{r}
+i = 4
+crit1 <- obs_sub$totalCount[i]*mu[i]
+crit2 <- obs_sub$altCount[i]
+hist(rbetabinom(9000, obs_sub$totalCount[i], mu[i]))
+abline(v = crit1, col = 'red', lty='dashed')
+abline(v = crit2, col = 'blue', lty='dashed')
+```
+
+### Calculate p-value correctly depending on whether or not altCount > totalCount*$\mu$
+
+```{r}
+i = 1:nrow(obs_sub)
+crit1 <- obs_sub$totalCount[i]*mu[i]
+crit2 <- obs_sub$altCount[i]
+
+plot(c(0,1)[as.integer(crit2 > crit1)+1],
+     pbetabinom(q = obs_sub$altCount[i], size = obs_sub$totalCount[i], prob = mu[i], rho = rho))
+```
+
+```{r}
+idx <- crit2 > crit1
+data.frame(direction = c(-1L, 1L)[as.integer(idx)+1],
+     pvalue = ifelse(idx, 
+            1-pbetabinom(q = obs_sub$altCount[i]-1, size = obs_sub$totalCount[i], prob = mu[i], rho = rho),
+            pbetabinom(q = obs_sub$altCount[i], size = obs_sub$totalCount[i], prob = mu[i], rho = rho)
+           ))%>%
+ggplot(aes( x= direction, y = pvalue, group = direction, fill = direction))+ geom_violin()
+```
+
+```{r}
+idx <- crit2 > crit1
+data.frame(direction = c(-1L, 1L)[as.integer(idx)+1],
+     pvalue = ifelse(idx, 
+            pbetabinom(q = obs_sub$altCount[i], size = obs_sub$totalCount[i], prob = mu[i], rho = rho),
+            1-pbetabinom(q = obs_sub$altCount[i], size = obs_sub$totalCount[i], prob = mu[i], rho = rho)
+           ))%>%
+ggplot(aes( x= direction, y = pvalue, group = direction, fill = direction))+ geom_violin()
+```
+
+```{r}
+idx <- crit2 > crit1
+data.frame(direction = c(-1L, 1L)[as.integer(idx)+1],
+     pvalue = ifelse(idx, 
+            pbetabinom(q = obs_sub$altCount[i], size = obs_sub$totalCount[i], prob = mu[i], rho = rho),
+            pbetabinom(q = obs_sub$altCount[i], size = obs_sub$totalCount[i], prob = mu[i], rho = rho)
+           ))%>%
+ggplot(aes( x= direction, y = pvalue, group = direction, fill = direction))+ geom_violin()
+```
+
+### Calculate p-values correctly
+
+```{r}
+for (i in 1:4) {
+    crit1 <- obs_sub$totalCount[i]*mu[i]
+    crit2 <- obs_sub$altCount[i]
+    if (is.na(crit1) | is.na(crit2)) {
+        next()
+    }
+    if (crit2 > crit1) {
+        pbetabinom(q = obs_sub$altCount[i], size = obs_sub$totalCount[i], prob = mu[i], rho = rho)
+        pval =1-pbetabinom(q = obs_sub$altCount[i]-1, size = obs_sub$totalCount[i], prob = mu[i], rho = rho)
+        .title = paste0("P(x > ", round(crit2,2), ") = ", format(pval, scientific = TRUE, digits = 3))
+    } else {
+        pval = pbetabinom(q = obs_sub$altCount[i], size = obs_sub$totalCount[i], prob = mu[i], rho = rho)
+        .title = paste0("P(x <= ", round(crit2,2), ") = ", format(pval, scientific = TRUE, digits = 3))
+    }
+    hist(rbetabinom(9000, obs_sub$totalCount[i], mu[i]), main = .title)
+    abline(v = crit1, col = 'red', lty='dashed')
+    abline(v = crit2, col = 'blue', lty='dashed')
+}
+```
+
+```{r}
+pvals <- sapply(1:length(mu), function(i) {
+    crit1 <- obs_sub$totalCount[i]*mu[i]
+    crit2 <- obs_sub$altCount[i]
+    if (is.na(crit1) | is.na(crit2)) {
+       return(NA)
+    }
+    if (crit2 > crit1) {
+        pbetabinom(q = obs_sub$altCount[i], size = obs_sub$totalCount[i], prob = mu[i], rho = rho)
+        pval =1-pbetabinom(q = obs_sub$altCount[i]-1, size = obs_sub$totalCount[i], prob = mu[i], rho = rho)
+    } else {
+        pval = pbetabinom(q = obs_sub$altCount[i], size = obs_sub$totalCount[i], prob = mu[i], rho = rho)
+    }
+    return(pval)
+})
+```
+
+```{r}
+hist(pvals)
+```
+
+```{r}
+hist(-log10(pvals))
+```
+
+```{r}
+library(readr)
+```
+
+```{r}
+results <- mutate(obs_sub,p_value = pvals,
+    direction = sapply(1:length(mu), function(i) {
+        crit1 <- obs_sub$totalCount[i]*mu[i]
+        crit2 <- obs_sub$altCount[i]
+        if (is.na(crit1) | is.na(crit2)) {
+           return(NA)
+        }
+        if (crit2 > crit1) {
+            return("Positive")
+        } else { 
+            return("Negative")
+        }
+    }))%>%
+arrange(p_value)
+write_tsv(results, "~/projects/bqtls/SecondRound_bQTLs/asb/Microglia_PU1.txt")
+```
+
+```{r}
+fread("~/projects/bqtls/SecondRound_bQTLs/asb/Microglia_PU1.txt")
+```
+
+```{r}
+library(stringr)
+```
+
+```{r}
+ld_table <- 
+    fread("https://ldlink.nih.gov/LDlinkRestWeb/tmp/proxy12270.txt")%>%
+    mutate(variantID = paste0(Coord, ':', str_extract(Alleles, "[AGCT]+"), ":", str_extract(Alleles, "[AGCT]+(?=.$)")))
+```
+
+```{r}
+results%>%inner_join(ld_table)%>%t
+```
+
+```{r}
+results <- fread("~/projects/bqtls/SecondRound_bQTLs/asb/Monocytes_PU1.txt")
+```
+
+```{r}
+ld_table <- 
+    fread("https://ldlink.nih.gov/LDlinkRestWeb/tmp/proxy12270.txt")%>%
+    mutate(variantID = paste0(Coord, ':', str_extract(Alleles, "[AGCT]+"), ":", str_extract(Alleles, "[AGCT]+(?=.$)")))
+```
+
+```{r}
+results%>%inner_join(ld_table)%>%t
+```
+
+# TODO: Calculate p-values for everything
+
+```{r}
+convert_ipynb("ariana_round2_VGAM.ipynb", output = xfun::with_ext("ariana_round2_VGAM.ipynb", "Rmd"))
+```
+
