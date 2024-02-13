@@ -4,3 +4,7 @@ src/pooledQTL/__pycache__
 src/.ipynb_checkpoints/ariana_round2-checkpoint.ipynb
 src/pooledQTL/__pycache__/deconvolve.cpython-39.pyc
 .Rproj.user
+.Rdata
+2024-01-31_binomial_test.pdf
+2024-02-08_binomial_test.pdf
+sample_swap_sweep.pdf
