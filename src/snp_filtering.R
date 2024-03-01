@@ -22,7 +22,7 @@ library(data.table)
 #rm(ash_result, dat, deconv, deconv_res, fit, geno, geno_sub, here, input, joined, joined_sub, mat, obs, obs_sub, peaks, res_, res1, res2, res3, res4, results, sim_dat, sum_stats, X)
 
 vcf_file <- "/home/dmeyer/projects/bqtls/sanger.vcf.gz"
-vcf_file <- "~/projects/bqtls/CIRMlines_flipped.vcf.gz"
+#vcf_file <- "~/projects/bqtls/CIRMlines_flipped.vcf.gz"
 vcf_samples <- system(paste("bcftools query -l", vcf_file), intern=T)
 sample_index <- "CW70142-1-1194512527_CW70142-1-1194512527" # Expected to be this
 #sample_index <- "CW30274-1-1194512543_CW30274-1-1194512543"
@@ -48,13 +48,45 @@ vcf$refCount <- 2 - vcf$altCount
 
 
 input = read_tsv("/home/dmeyer/projects/bqtls/tdp43/allelic/tdp43_input_annotated_allelic.out")%>%rename(chrom=1)
-input = input[(input$variantID != ".") & (input$variantID %in% vcf[vcf$altCount == 1,]$variantID),]
+print(nrow(input))
+input = input[(input$variantID != "."),]
+print(nrow(input))
+input = input[(input$variantID %in% vcf[vcf$altCount == 1,]$variantID),]
+print(nrow(input))
 input$in_intron = as.numeric((input$in_gene == 1) & (input$in_exon == 0))
 input_original = input
 #input_idx = (input$totalCount >= 10) & (input$altCount >= 2) & (input$refCount >= 2)
-input_idx = (input_original$totalCount >= 10)
+sum( (input$totalCount >= 30) & (input$altCount >= 2) & (input$refCount >= 2) )
+sum( (input$in_intron) )
+sum( (input$in_intron) & (input$in_peak))
+sum(input$in_peak & input$in_exon)
+
 # filtering the input to make sure 10 total reads, 2 from each allele
-input = input_original[input_idx,]
+input_idx = (input$totalCount >= 30)#& (input$altCount >= 2) & (input$refCount >= 2)
+#input_idx = (input$totalCount >= 30)& (input$altCount >= 2) & (input$refCount >= 2)
+input = input[input_idx,]
+print(nrow(input))
+
+
+nrow(input[input$in_intron == 1,])
+
+ip_data = read_tsv("/home/dmeyer/projects/bqtls/tdp43/allelic/tdp43_ip_allelic.out")%>%rename(chrom=1)%>%
+    filter(totalCount >= 0)
+joined=inner_join(input[idx,], ip_data, by = join_by(chrom, position, variantID, refAllele, altAllele))
+nrow(joined)
+joined%>% # Idea: it would be helpful to know the total counts in the IP data for stuff on the bottom
+    ggplot(aes(x = altCount.x/totalCount.x, y = altCount.y/totalCount.y ))+
+    geom_point(alpha=0.5)+
+    geom_abline(slope = 1, intercept = 0, linetype="dashed", color = "red")+
+    theme_linedraw()+
+    lims(x = c(0.0, 1.0), y = c(0.0,1.0))+
+    labs(x = "Input MAF", y = "IP MAF", )
+
+
+plot(density((input$totalCount)))
+
+plot(density(log10(input$totalCount[idx])))
+
 
 print(ggplot(data.table(ci=input$altCount/input$totalCount), aes(x = ci))+
     geom_histogram() + 
@@ -67,7 +99,8 @@ print(ggplot(data.table(x=input$altCount/input$totalCount, y= input$totalCount),
 
 #input%>%filter(altCount/totalCount == 0, totalCount > 900)%>%arrange(desc(totalCount))
 
-sum_stats = foreach(i = 1:nrow(input), .combine = bind_rows) %do% {
+registerDoMC(4)
+sum_stats = foreach(i = 1:nrow(input), .combine = bind_rows) %dopar% {
     here = input[i,]
     
     bt = binom.test(c(here$altCount, here$refCount), p = 0.5)
@@ -81,7 +114,11 @@ sum_stats = foreach(i = 1:nrow(input), .combine = bind_rows) %do% {
             lor_mean = mean(lor_ci),     
             lor_se = (lor_ci[2] - lor_ci[1])/4 )
 }
-#sum_stats = sum_stats[input_idx,]
+write_tsv(sum_stats, "sum_stats.txt")
+
+nrow(sum_stats)
+
+sum_stats = sum_stats[input_idx,]
 # TODO:
 # check that ci[1] <= 0.5 <= c[2] AND that ci[1] and ci[2] both within window of p- epsilon , p+epsilon
 # THEN check that 
@@ -101,18 +138,23 @@ sum_stats = foreach(i = 1:nrow(input), .combine = bind_rows) %do% {
 # Once you've done this filtering then run the beta model again
 
 # How many are testable? How many does the model think are significant
+
+sum_stats <- read_tsv("sum_stats.txt")
+nrow(sum_stats[input_idx,])
+
 dev.off()
 pdf("2024-02-08_binomial_test.pdf")
 {
-epsilon = 0.2
+epsilon = 0.3
 p = 0.5
 ci = sum_stats$or_mean
 idx = apply(sum_stats, 1, function(x) {
-    (x['ci1'] >= p - epsilon) &
+        (x['ci1'] >= p - epsilon) &
         (x['ci1'] <= x['ci2']) & 
-        (x['ci2'] <= p + epsilon) &
-        (x['ci1'] <= 0.5) & (0.5 <= x['ci2'])
+        (x['ci2'] <= p + epsilon)
+        #(x['ci1'] <= 0.5) & (0.5 <= x['ci2']) Get rid of this line to keep some allele specific expression effect
 })
+plot(density(log10(input$totalCount[idx])))
 
 print(ggplot(data.table(ci, p, epsilon), aes(x = ci))+
     geom_histogram()+labs(title="Epsilon = 0.2 Confidence interval filtering "))
@@ -172,3 +214,66 @@ idx = apply(sum_stats, 1, function(x) {
     })
 sum_stats[idx,]
 write_tsv(input[idx,], "/home/dmeyer/projects/bqtls/tdp43/tdp43_filtered_input.txt")
+
+ip_data = read_tsv("/home/dmeyer/projects/bqtls/tdp43/allelic/tdp43_ip_allelic.out")%>%rename(chrom=1)%>%
+    filter(totalCount >= 10)
+{
+epsilon = 0.4
+p = 0.5
+ci = sum_stats$or_mean
+idx = apply(sum_stats, 1, function(x) {
+        (x['ci1'] >= p - epsilon) &
+        (x['ci1'] <= x['ci2']) & 
+        (x['ci2'] <= p + epsilon)
+        #(x['ci1'] <= 0.5) & (0.5 <= x['ci2']) Get rid of this line to keep some allele specific expression effect
+})
+
+## Now we want to get the distribution
+joined=inner_join(input[idx,], ip_data, by = join_by(chrom, position, variantID, refAllele, altAllele))
+nrow(joined)
+joined%>% # Idea: it would be helpful to know the total counts in the IP data for stuff on the bottom
+    ggplot(aes(x = altCount.x/totalCount.x, y = altCount.y/totalCount.y ))+
+    geom_point(alpha=0.5)+
+    geom_abline(slope = 1, intercept = 0, linetype="dashed", color = "red")+
+    theme_linedraw()+
+    lims(x = c(0.0, 1.0), y = c(0.0,1.0))+
+    labs(x = "Input MAF", y = "IP MAF", title = "Epsilon = "%>%paste0(epsilon))
+}
+
+ip_data = read_tsv("/home/dmeyer/projects/bqtls/tdp43/allelic/tdp43_ip_allelic.out")%>%rename(chrom=1)
+min(ip_data$totalCount)
+
+
+# For each epsilon get the totalcounts
+epsilon = 0.4
+
+res = lapply(c(0.2, 0.3, 0.4), function(epsilon) {
+    p = 0.5
+    ci = sum_stats$or_mean
+    idx = apply(sum_stats, 1, function(x) {
+            (x['ci1'] >= p - epsilon) &
+            (x['ci1'] <= x['ci2']) & 
+            (x['ci2'] <= p + epsilon)
+    })
+    input$totalCount[idx]
+})
+
+length(res[[1]])
+
+# Note: go with the 0.3
+set.seed(123)
+group1 <- rnorm(100, mean = 0, sd = 1)
+group2 <- rnorm(100, mean = 2, sd = 1)
+
+# Combine data into a data frame
+df <- data.frame(
+    value = c(res[[1]], res[[2]], res[[3]]),
+    group = factor(c(rep("0.2", length(res[[1]])), 
+                   rep("0.3", length(res[[2]])),
+                   rep("0.4", length(res[[3]]))))
+)
+ggplot(df, aes(x = value, color = group)) +
+    geom_density(alpha = 0.5) +  # Overlay density plots with transparency
+    scale_x_continuous(trans = 'log10')+
+    labs(title = "Density of totalCounts at different values of epsilon", x = "totalCounts [log10 scale]", y = "Density", color="Epsilon") +
+    theme_minimal()
