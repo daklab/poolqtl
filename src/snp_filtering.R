@@ -277,3 +277,28 @@ ggplot(df, aes(x = value, color = group)) +
     scale_x_continuous(trans = 'log10')+
     labs(title = "Density of totalCounts at different values of epsilon", x = "totalCounts [log10 scale]", y = "Density", color="Epsilon") +
     theme_minimal()
+
+# Write out filtered input data here:
+for (epsilon in c(0.2, 0.3, 0.4)) {
+    p = 0.5
+    ci = sum_stats$or_mean
+    idx = apply(sum_stats, 1, function(x) {
+            (x['ci1'] >= p - epsilon) &
+            (x['ci1'] <= x['ci2']) & 
+            (x['ci2'] <= p + epsilon)
+    })
+    write_tsv(input[idx,],
+              paste0("/home/dmeyer/projects/bqtls/tdp43/tdp43_filtered_input_epsilon",epsilon,".txt")
+    )
+}
+
+for (epsilon in c(0.2, 0.3, 0.4)) {
+    p = 0.5
+    ci = sum_stats$or_mean
+    idx = apply(sum_stats, 1, function(x) {
+            (x['ci1'] >= p - epsilon) &
+            (x['ci1'] <= x['ci2']) & 
+            (x['ci2'] <= p + epsilon)
+    })
+    input[idx,],
+}
