@@ -58,6 +58,10 @@ read_feather_file <- function(feather_file, cell_lines) {
 }
 
 run_model <- function(geno, cell_lines, obs_file, out_file, deconv_out=NULL) {
+    
+    #obs_file <- "/home/dmeyer/SecondRound_bQTLs/PCR_optimization_results/ac2/1_0H05_02A6Icahn_Microglia-14cyc_CEBP-beta_hs_i64_allelic_out.txt"
+    obs_file <- "/home/dmeyer/SecondRound_bQTLs/PCR_optimization_results/ac2/2_0H06_02A6Icahn_Microglia-16cyc_CEBP-beta_hs_i67_allelic_out.txt"
+    #obs_file <- microglia_obs_files[1]
     obs <- fread(obs_file, sep = "\t", header = F, skip = 1) 
     obs <- obs[, 1:(ncol(obs) - 1)]
     colnames(obs) <- unlist(strsplit(readLines(obs_file, 1), "\t"))
@@ -76,9 +80,18 @@ run_model <- function(geno, cell_lines, obs_file, out_file, deconv_out=NULL) {
     variants_keep <- intersect(obs_sub$variantID, geno_sub$variantID)
     obs_sub <- obs_sub[match(variants_keep, variantID)]
     geno_sub <- geno[match(variants_keep, variantID)]
+    
+    smoothScatter(obs_sub$refCount, obs_sub$altCount)
+    print(ggplot(obs_sub, aes(x = totalCount)) + geom_histogram() +
+              labs(title = "Microglia 16 cycle"))
+    
+    hist(obs$totalCount, main = "Microglia 18 cyc",log='y' )
+    #title("Microglia_CEBP_16cyc")
+    
     X <- as.matrix(geno[match(variants_keep, variantID), ..cell_lines])
     plot(table(geno$MAF), main = paste(nrow(X), "variants retained with MAF >= 0.05"))
     abline(v=0.05, col='red', lty='dashed')
+    
 
     # observed allelic ratios
     y <- with(obs_sub, altCount / totalCount)
@@ -330,4 +343,28 @@ runSingleDonor <- function() {
     }
     rm(geno)
     for (i in 1:10) { invisible(gc()) };
+}
+runMicrogliaPCRExperiment <- function() {
+    microglia_vcf_file <- "/home/dmeyer/projects/bqtls/SecondRound_bQTLs/VCF_files/bgzipped_vcfs/merged_ancestries_microglia.vcf.gz"
+    microglia_feather <- "~/projects/bqtls/SecondRound_bQTLs/VCF_files/feathers/merged_ancestries_microglia.feather"
+    microglia_obs_files <- list.files("/home/dmeyer/projects/bqtls/SecondRound_bQTLs/PCR_optimization_results/allelecounter", "*allelic_out.txt$", full.names = TRUE)
+    tfs <- basename(microglia_obs_files)%>%str_extract("1[64]cyc_CEBP")
+    deconv_out_files <- paste0("/home/dmeyer/projects/bqtls/SecondRound_bQTLs/PCR_optimization_results/deconvolve_data/Microglia_", tfs, ".deconvolution.txt")
+    microglia_out_files <- paste0("~/projects/bqtls/SecondRound_bQTLs/PCR_optimization_results/asb/Microglia_", paste0(tfs,".model_results.txt"))
+    cell_lines <- get_cell_lines_from_vcf(microglia_vcf_file)
+    #geno <- read_feather_file(microglia_feather, cell_lines)
+    pdfs <- str_replace(microglia_out_files, "model_results.txt$", "model_output.pdf")
+    for (i in 1:length(microglia_obs_files)) {
+        gc()
+        pdf(pdfs[i])
+        cat(paste0("\nrun_model(geno, cell_lines, ",microglia_obs_files[i], ", ", microglia_out_files[i], ")\n"))
+        run_model(geno, cell_lines, microglia_obs_files[i], microglia_out_files[i], deconv_out = deconv_out_files[i])
+        tryCatch({
+            #run_model(geno, cell_lines, microglia_obs_files[i], microglia_out_files[i])
+        }, error=function(e) { message(e) }, 
+        finally = function(...) { dev.off(); next(); })
+        dev.off()
+    }
+    #rm(geno)
+    #for (i in 1:10) { invisible(gc()) };
 }

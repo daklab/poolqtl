@@ -142,7 +142,7 @@ res_ %>% filter( ip_scale_factor == 10)
 
 
 # TODO: Download peak data from Ariana
-peaks = read_tsv("~/../mschertzer/pilot_pool/macs/hnrnpk-consensus.bed", col_names = c("chr","start","end","name","score"))
+peaks = read_tsv("/home/dmeyer/projects/bqtls/SecondRound_bQTLs/Peaks0.001qval/03_0ESO_0221Icahn_Monocytes_PU1_hs_i02_peaks.narrowPeak")#, col_names = c("chr","start","end","name","score"))
 prop_genome = sum(peaks$end - peaks$start) / 3e9 # 2%
 num_snps_in_peaks = floor(3e6 * prop_genome)
 
