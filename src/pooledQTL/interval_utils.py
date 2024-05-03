@@ -8,4 +8,7 @@ def to_interval_trees(peakdf, chroms):
 
 def get_overlap(peaks, snps): 
     return [ min(len(peaks[row.chrom][row.position]),1) for row in snps.itertuples() ]
-
+    
+def get_overlap_window(peaks, snps, window=100000): 
+    return [min(len(peaks[row.chrom][row.position-window] | peaks[row.chrom][row.position] | peaks[row.chrom][row.position+window]), 1) for row in snps.itertuples() ]
+    

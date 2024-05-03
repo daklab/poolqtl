@@ -1,0 +1,622 @@
+---
+title: "BasicModelComparison"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tidyverse)
+vcf_file <- "/gpfs/commons/home/dmeyer/bindingQTL_share/genotype/chrAll_QCFinished_full_2sample.anno.vcf.gz"
+
+input_file <- '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-control-tdp/allelic/24a-hNIL-control-tdp_input_allelic.out'
+ip_file <- '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-control-tdp/allelic/24a-hNIL-control-tdp_ip_allelic.out'
+sample_index <- 'CTRL-NEUHE723FGT-02545-G'
+rbp = "24a-hNIL-control-tdp"
+epsilon = 0.3
+filtered_input_file <- str_replace(input_file, "out$", paste0("filtered_epsilon",epsilon,".txt"))
+input <- read_tsv(input_file)
+ip_dat <- read_tsv(ip_file)
+filtered_input <- read_tsv(filtered_input_file)
+sum_stats_file <- paste0(dirname(filtered_input_file),'/', '24a-hNIL-control-tdp_input_allelic.sum_stats.tsv')
+bqtls_beta_file <- paste0(dirname(filtered_input_file),'/', '24a-hNIL-control-tdp_beta_filtered_epsilon0.3_ipreads30_struct_with_peaks.tsv.gz')
+bqtls_beta <- read_tsv(bqtls_beta_file)
+```
+
+For comparison you can merge this on the `bqtls_beta` dataframe
+
+Here I run a chi-squared test to test if the distribution of alt and ref counts are the same between the two groups (IP and input) or different
+```{r}
+require(doMC)
+registerDoMC(4)
+sum_stats = foreach(i = 1:nrow(bqtls_beta), .combine = bind_rows) %dopar% {
+    here = bqtls_beta[i,]
+    input_ref_count <- here$refCount_input
+    input_alt_count <- here$altCount_input
+    IP_ref_count <- here$refCount_IP
+    IP_alt_count <- here$altCount_IP
+
+    contingency_table <- matrix(c(input_ref_count, input_alt_count, IP_ref_count, IP_alt_count), 
+                                 nrow = 2, 
+                                 byrow = TRUE,
+                                 dimnames = list(c("Input", "IP"), c("Ref", "Alt")))
+
+    # Perform chi-squared test
+    chi_square_result <- chisq.test(contingency_table)
+    
+    # Calculate proportions in each group
+    prop_input <- input_ref_count / (input_ref_count + input_alt_count)
+    prop_IP <- IP_ref_count / (IP_ref_count + IP_alt_count)
+    
+    # Calculate log ratio of proportions
+    log_ratio_prop <- log10(prop_IP) - log10(prop_input)
+    
+    with(chi_square_result, tibble(statistic, parameter, p.value, lor = log_ratio_prop))
+}
+
+sum_stats$q.value = p.adjust(sum_stats$p.value, method = 'fdr')
+```
+
+TODO: Need to line up sum_stats with `bqtls_beta` table and examine how many are in peaks as a way of evaluating
+
+Also it would be good to highlight where the significant hits from the chi-squared test are appearing in the ASE vs ASB plot -- I anticipate that they
+have high ASE.
+
+TODO: What other ways can I compare these two methods for quality of bQTLs?
+
+```{r}
+p1 = ggplot(bqtls_beta, aes(x = asb_loc, y = ase_loc)) +
+ geom_point(data=filter(bqtls_beta,asb_q >= 0.01), color='black')+
+ geom_point(data=filter(bqtls_beta,asb_q < 0.01), color='#36ba59') +
+ labs(x = "ASB effect size", y = "ASE effect size", title = str_glue("{sum(bqtls_beta$asb_q < 0.01)} SNPs with q < .01 | beta model"))
+p2 = ggplot(bqtls_beta, aes(x = asb_loc, y = ase_loc)) +
+ geom_point(data=bqtls_beta[sum_stats$q.value >= 0.01,], color='black')+
+ geom_point(data=bqtls_beta[sum_stats$q.value < 0.01,], color='#36ba59') +
+ labs(x = "ASB effect size", y = "ASE effect size", title = str_glue("{sum(sum_stats$q.value < 0.01)} SNPs with q < .01 | chi squared model"))
+print(p1)
+print(p2)
+```
+
+```{r}
+qthresh = 0.05
+x = bqtls_beta[bqtls_beta$asb_q < qthresh,]
+y = bqtls_beta[sum_stats$q.value < qthresh,]
+x_idx = x$in_peak == 1
+y_idx = y$in_peak == 1
+cat(sum(x_idx)%>%paste0(" out of ", nrow(x), " ", round(sum(x_idx)/nrow(x)*100,3), "% of variants in peaks under chi-squared model"), "\n")
+cat(sum(y_idx)%>%paste0(" out of ", nrow(y), " ", round(sum(y_idx)/nrow(y)*100,3), "% of variants in peaks under beta model"), "\n")
+cat(paste0(
+        length(intersect(x$variantID, y$variantID)), " ",
+        length(union(x$variantID, y$variantID)), " ",
+        round(length(intersect(x$variantID, y$variantID))/ length(union(x$variantID, y$variantID))*100,  3),
+        "% of variants in common between the two models"
+      ), '\n')
+```
+
+```{r}
+joined=inner_join(input, ip_dat, by = join_by(contig, position, variantID, refAllele, altAllele))
+smoothScatter(joined$altCount.x/joined$totalCount.x, 
+     joined$altCount.y/joined$totalCount.y )
+```
+
+
+```{r}
+
+filtered_input_files <- c("/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-control-tdp/allelic/24a-hNIL-control-tdp_input_allelic.10readsInput_filtered_epsilon0.3_sharedhet.txt",
+                          "/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-c9-tdp/allelic/24a-hNIL-c9-tdp_input_allelic.10readsInput_filtered_epsilon0.3_sharedhet.txt",
+                          "/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-control-tdp/allelic/24a-hNIP-control-tdp_input_allelic.10readsInput_filtered_epsilon0.3_sharedhet.txt",
+                          "/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-c9-tdp/allelic/24a-hNIP-c9-tdp_input_allelic.10readsInput_filtered_epsilon0.3_sharedhet.txt")
+
+
+donors <- c('CTRL-NEUHE723FGT-02545-G', 'CASE-NEUFV237VCZ-01369-G', 'CTRL-NEUHE723FGT-02545-G', 'CASE-NEUFV237VCZ-01369-G')
+rbps = c("24a-hNIL-control-tdp", "24a-hNIL-c9-tdp", "24a-hNIP-control-tdp", "24a-hNIP-c9-tdp")
+bqtls_beta_files <- paste0(dirname(filtered_input_files),'/',
+                          rbps,
+                          '_beta_10readsInput_filtered_epsilon0.3_ipreads30_allhet_struct_with_peaks.tsv.gz')
+                          #'_beta_filtered_epsilon0.3_ipreads30_struct_with_peaks.tsv.gz')
+bqtls_betas <- lapply(bqtls_beta_files, read_tsv)
+```
+
+```{r}
+all_sum_stats <- lapply(1:length(rbps), function(j) {
+
+sum_stats = foreach(i = 1:nrow(bqtls_betas[[j]]), .combine = bind_rows) %dopar% {
+    here = bqtls_betas[[j]][i,]
+    input_ref_count <- here$refCount_input
+    input_alt_count <- here$altCount_input
+    IP_ref_count <- here$refCount_IP
+    IP_alt_count <- here$altCount_IP
+
+    contingency_table <- matrix(c(input_ref_count, input_alt_count, IP_ref_count, IP_alt_count), 
+                                 nrow = 2, 
+                                 byrow = TRUE,
+                                 dimnames = list(c("Input", "IP"), c("Ref", "Alt")))
+
+    # Perform chi-squared test
+    chi_square_result <- chisq.test(contingency_table)
+    
+    # Calculate proportions in each group
+    prop_input <- input_ref_count / (input_ref_count + input_alt_count)
+    prop_IP <- IP_ref_count / (IP_ref_count + IP_alt_count)
+    
+    # Calculate log ratio of proportions
+    log_ratio_prop <- log10(prop_IP) - log10(prop_input)
+    
+    with(chi_square_result, tibble(statistic, parameter, p.value, lor = log_ratio_prop))
+}
+
+sum_stats$q.value = p.adjust(sum_stats$p.value, method = 'fdr')
+return(sum_stats)
+})
+```
+
+```{r}
+library(eulerr)
+
+bqtls_betas%>%lapply(function(x) x$variantID)%>%
+  `names<-`(rbps)%>%
+  venn%>%
+  plot
+
+```
+
+```{r}
+install.packages('qqman')
+library(qqman)
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+manhattan_plot <- manhattan(data.table(CHR = bqtls_beta$chrom%>%str_extract("[0-9]+")%>%as.integer, 
+                                       BP = bqtls_beta$position,
+                                       SNP = bqtls_beta$variantID,
+                                       P = bqtls_beta$asb_q))
+print(manhattan_plot)
+}
+
+
+```
+
+```{r}
+#cat(paste(bqtls_betas[[j]]$variantID[ sum_stats$q.value < .01 ], collapse="\n"))
+#cat(paste(bqtls_betas[[j]]$variantID[ sum_stats$q.value < .05 ], collapse="\n"))
+```
+
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  sum_stats <- all_sum_stats[[j]]
+  p2 = ggplot(bqtls_beta, aes(x = asb_loc, y = ase_loc)) +
+   geom_point(data=bqtls_beta[bqtls_beta$asb_q >= 0.05,], color='black')+
+   geom_point(data=bqtls_beta[bqtls_beta$asb_q < 0.05,], color='#36ba59') +
+   labs(x = "ASB effect size", y = "ASE effect size", title = str_glue("{sum(bqtls_beta$asb_q < 0.05)} SNPs with q < .01 | beta model for {rbps[j]}"))
+  print(p2)
+}
+```
+
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  sum_stats <- all_sum_stats[[j]]
+  p2 = ggplot(bqtls_beta, aes(x = asb_loc, y = ase_loc)) +
+   geom_point(data=bqtls_beta[sum_stats$q.value >= 0.05,], color='black')+
+   geom_point(data=bqtls_beta[sum_stats$q.value < 0.05,], color='#36ba59') +
+   labs(x = "ASB effect size", y = "ASE effect size", title = str_glue("{sum(sum_stats$q.value < 0.05)} SNPs with q < .01 | chi squared model for {rbps[j]}"))
+  print(p2)
+}
+```
+
+
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  sum_stats <- all_sum_stats[[j]]
+  in_chi_sq <- sum_stats$q.value < 0.05
+  in_beta  <- bqtls_beta$asb_q < 0.05
+  idx <- in_chi_sq & !in_beta
+  p2 = ggplot(bqtls_beta, aes(x = asb_loc, y = ase_loc, text = variantID)) +
+   geom_point(data=bqtls_beta[!idx,], color='black')+
+   geom_point(data=bqtls_beta[idx,], color='#36ba59') +
+   labs(x = "ASB effect size", y = "ASE effect size", title = str_glue("{sum(idx)} SNPs with q < .05 in chi squared model but not in beta model q < .01"))
+  print(p2)
+  if (j == 2) break
+}
+```
+
+```{r}
+plotly::ggplotly(p2)
+```
+
+
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  sum_stats <- all_sum_stats[[j]]
+  in_chi_sq <- sum_stats$q.value < 0.01
+  in_beta  <- bqtls_beta$asb_q < 0.01
+  #idx <- in_chi_sq & !in_beta & abs(bqtls_beta$asb_loc) > 1
+  idx <- !in_chi_sq & in_beta
+  cat(rbps[j],'\n')
+  cat(sum(idx), '\n')
+  #cat(paste(bqtls_beta$variantID[idx], collapse = "\n"))
+  cat("\n-------------------------------------------\n")
+}
+```
+
+In 24a-hNIP-c9-tdp, rs33943686 looks like it's right before a junction and upstream of a peak. This was found by chi-squared but not by the beta model.
+In 24a-hNIP-c9-tdp, looks like it's right before a junction and upstream of a peak
+
+
+```{r}
+# This is for things caught by beta model but not by chi-squared model
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  sum_stats <- all_sum_stats[[j]]
+  in_chi_sq <- sum_stats$q.value < 0.01
+  in_beta  <- bqtls_beta$asb_q < 0.01
+  idx <- in_chi_sq & in_beta & abs(bqtls_beta$asb_loc) > 1
+  cat(rbps[j],'\n')
+  cat(paste(bqtls_beta$variantID[idx], collapse = "\n"))
+  cat("\n-------------------------------------------\n")
+}
+```
+From 24a-hNIL-control-tdp rs56264956, found by beta model and not by chi-squared model is somewhat near a peak
+
+```{r}
+bqtls_beta%>%filter(variantID == "rs397561")
+```
+
+How many SNPs are in peaks?
+Look at overlap of these between the models and between the samples
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  sum_stats <- all_sum_stats[[j]]
+  in_chi_sq <- sum_stats$q.value < 0.01
+  in_beta  <- bqtls_beta$asb_q < 0.01
+  cat(rbps[j],'\n')
+  idx <- in_chi_sq & !in_beta & !bqtls_beta$in_exon
+  cat(sum(idx), 'chi sq only\n')
+  idx <- in_beta & !in_chi_sq & !bqtls_beta$in_exon
+  cat(sum(idx), 'beta only\n')
+  idx <- in_beta & in_chi_sq & bqtls_beta$in_peak
+  cat(sum(idx), 'both\n')
+  cat("\n-------------------------------------------\n")
+}
+```
+
+```{r}
+for (j in 1:length(bqtls_betas)) {
+bqtls_beta <- bqtls_betas[[j]]
+sum_stats <- all_sum_stats[[j]]
+in_chi_sq <- sum_stats$q.value < 0.05
+in_beta  <- bqtls_beta$asb_q < 0.05
+group <- rep('', nrow(bqtls_beta))
+group[!in_chi_sq & !in_beta] <-  "Not significant"
+group[in_chi_sq & !in_beta] <- "Significant in Chi-Squared Model only"
+group[!in_chi_sq & in_beta] <-  "Significant in Beta Model only"
+group[in_chi_sq & in_beta] <-  "Significant in both models"
+# Plotting input ratio vs IP ratio and seeing if it’s called a bqtl by one model, another, or both
+p <- ggplot(bqtls_beta[!(!in_chi_sq & !in_beta),], aes(x=altCount_input/totalCount_input, y =  altCount_IP/totalCount_IP, color=group[!(!in_chi_sq & !in_beta)]))+
+  geom_point(aes(color = 'black'), data = bqtls_beta[group == "Not significant",], color="black")+
+  geom_point()+
+  #lims(x = c(0,1), y = c(0,1))+
+geom_abline(slope = 1, intercept = 0, col="red", lty="dashed")+
+    labs(x = "Alt Ratio in Input", y = "Alt Ratio in IP", color = "", title = paste0(rbps[j], " | Significant hits of two models both at q < .05"))
+print(p)
+}
+```
+
+
+```{r}
+genc <- fread("/gpfs/commons/home/dmeyer/bindingQTL_share/gencode.v38.annotation.gtf.gz",
+              sep="\t", header=FALSE, select=1:5)
+# Rename columns
+names(genc) <- c("chrom", "gene", "annotation", "start", "end")
+
+# Remove super short annotations
+genc <- genc[(genc$end - genc$start) >= 9, ]
+
+```
+
+```{r}
+fread("~/tmp.txt")%>%filter(V3 == "gene")
+```
+
+
+```{r}
+# UNC13A
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  sum_stats <- all_sum_stats[[j]]
+  in_chi_sq <- sum_stats$q.value < 0.05
+  in_beta  <- bqtls_beta$asb_q < 0.05
+  in_unc13a = with(bqtls_beta, (position >= 17601336) & (position <= 17688365))
+  cat(rbps[j],'\n')
+  cat(sum(in_unc13a), "SNPs in UNC13A made it past filtering\n")
+  cat(sum(in_unc13a & in_chi_sq), "SNPs in UNC13A significant by chi-sq model\n")
+  cat(sum(in_unc13a & in_beta), "SNPs in UNC13A significant by beta model\n")
+  cat("\n-------------------------------------------\n")
+}
+```
+
+Looking at read counts for significant hits
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  sum_stats <- all_sum_stats[[j]]
+  in_chi_sq <- sum_stats$q.value < 0.05
+  in_beta  <- bqtls_beta$asb_q < 0.05
+  neither <- rep(TRUE, nrow(bqtls_beta))
+  x=bqtls_beta$totalCount_input
+  y=bqtls_beta$totalCount_IP
+  dat <- data.table(totalCount_input = c(x[in_chi_sq], x[in_beta], x[!in_beta & !in_chi_sq]),
+             totalCount_IP = c(y[in_chi_sq], y[in_beta], y[!in_beta & !in_chi_sq]),
+             group = rep(c("ChiSq", "Beta", "Baseline"), c(sum(in_chi_sq), sum(in_beta), sum(neither))))
+  p1 <- ggplot(dat,aes(x = totalCount_input, color=group))+
+    geom_density()+
+    scale_x_log10()+
+    labs(title = paste(rbps[j],"| # of reads input"))
+  p2 <- ggplot(dat,aes(x = totalCount_IP, color=group))+
+    geom_density()+
+    scale_x_log10()+
+    labs(title = paste(rbps[j],"| # of reads IP"))
+  print(p1)
+  print(p2)
+}
+```
+
+Looking at read counts for significant hits -- replacing x axis with geometric mean of input and IP totalCount
+```{r}
+library(ggplot2)
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  sum_stats <- all_sum_stats[[j]]
+  in_chi_sq <- sum_stats$q.value < 0.05
+  in_beta  <- bqtls_beta$asb_q < 0.05
+  x=bqtls_beta$totalCount_input
+  y=bqtls_beta$totalCount_IP
+  #dat <- data.table(totalCount_input = c(x[in_chi_sq], x[in_beta], x[!in_beta & !in_chi_sq]),
+  #           totalCount_IP = c(y[in_chi_sq], y[in_beta], y[!in_beta & !in_chi_sq]),
+  #           group = rep(c("ChiSq", "Beta", "Neither"), c(sum(in_chi_sq), sum(in_beta), sum(!in_beta & !in_chi_sq))))
+  dat <- data.table(totalCount_input = c(x[in_chi_sq], x[in_beta], x[!in_beta & !in_chi_sq]),
+             totalCount_IP = c(y[in_chi_sq], y[in_beta], y[!in_beta & !in_chi_sq]),
+             group = rep(c("ChiSq", "Beta", "Baseline"), c(sum(in_chi_sq), sum(in_beta), sum(neither))))
+  p1 <- ggplot(dat,aes(x = totalCount_input, color=group))+
+    geom_density()+
+    scale_x_log10()+
+    labs(title = paste(rbps[j],"| # of reads input"))
+  p2 <- ggplot(dat,aes(x = totalCount_IP, color=group))+
+    geom_density()+
+    scale_x_log10()+
+    labs(title = paste(rbps[j],"| # of reads IP"))
+  p3 <- ggplot(dat,aes(x = sqrt(totalCount_input*totalCount_IP), color=group))+
+    geom_density()+
+    scale_x_log10()+
+    labs(title = paste(rbps[j],"| geometric mean of # of reads"))
+  #print(p1)
+  print(p3)
+}
+```
+
+
+```{r}
+lapply(1:length(bqtls_betas), function(j) {
+  bqtls_beta <- bqtls_betas[[j]]
+  sum_stats <- all_sum_stats[[j]]
+  in_chi_sq <- sum_stats$q.value < 0.05
+  in_beta  <- bqtls_beta$asb_q < 0.05
+  c(sum(in_chi_sq), sum(in_beta), sum(!in_beta & !in_chi_sq))
+}) -> res
+x = as.data.frame(reduce(res, rbind))
+names(x) = c("ChiSq", "Beta", "Neither")
+x
+```
+
+Top hits for beta model
+```{r}
+lapply(1:length(bqtls_betas), function(j) {
+  bqtls_beta <- bqtls_betas[[j]]
+  sum_stats <- all_sum_stats[[j]]
+  in_chi_sq <- sum_stats$q.value < 0.05
+  in_beta  <- bqtls_beta$asb_q < 0.05
+  bqtls_beta[in_beta,]
+}) -> res
+
+res[[1]]%>%arrange(asb_q)
+```
+
+Top hits for chi-squared model
+```{r}
+lapply(1:length(bqtls_betas), function(j) {
+  bqtls_beta <- bqtls_betas[[j]]
+  sum_stats <- all_sum_stats[[j]]
+  in_chi_sq <- sum_stats$q.value < 0.05
+  in_beta  <- bqtls_beta$asb_q < 0.05
+  cbind(bqtls_beta, sum_stats)[in_chi_sq,]
+}) -> res
+
+res[[1]]%>%arrange(q.value)
+```
+
+```{r}
+lapply(1:length(bqtls_betas), function(j) {
+  bqtls_beta <- bqtls_betas[[j]]
+  sum_stats <- all_sum_stats[[j]]
+  in_chi_sq <- sum_stats$q.value < 0.05
+  in_beta  <- bqtls_beta$asb_q < 0.05
+  c(rbps[j],
+    sum(in_chi_sq), 
+    sum(in_beta), 
+    nrow(bqtls_beta),
+    #sum(!in_beta & !in_chi_sq),
+    sum(in_chi_sq & bqtls_beta$in_peak),
+    sum(in_beta & bqtls_beta$in_peak),
+    #sum(!in_beta & !in_chi_sq & bqtls_beta$in_peak),
+    sum(bqtls_beta$in_peak),
+    sum(in_chi_sq & bqtls_beta$near_peak_100k),
+    sum(in_beta & bqtls_beta$near_peak_100k),
+    sum(bqtls_beta$near_peak_100k)
+    )
+}) -> res
+x = as.data.frame(reduce(res, rbind))
+names(x) = c('rbp',"ChiSq", "Beta", "Everything", "ChiSq In Peak", "Beta In Peak", "Everything In Peak","ChiSq Near Peak", "Beta Near Peak", "Everything Near Peak")
+x
+```
+
+```{r}
+bqtls_betas[[1]]$asb_q%>%qq(main="Beta ASB q-values")%>%print
+all_sum_stats[[1]]$p.value%>%p.adjust(method='fdr')%>%qq(main = "Chi-Sq q-values")%>%print
+#all_sum_stats[[1]]$p.value%>%qq%>%print
+```
+
+```{r}
+j = 1
+bqtls_beta <- bqtls_betas[[j]]
+sum_stats <- all_sum_stats[[j]]
+in_chi_sq <- sum_stats$q.value < 0.05
+in_beta  <- bqtls_beta$asb_q < 0.05
+list(
+chiSq = bqtls_beta$variantID[in_chi_sq],
+beta = bqtls_beta$variantID[in_beta]
+)%>%
+  venn%>%
+  plot
+```
+
+```{r}
+sum(in_beta)%>%print
+print(sum(in_chi_sq))
+```
+
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  sum_stats <- all_sum_stats[[j]]
+  qthresh = 0.05
+  in_chi_sq <- sum_stats$q.value < qthresh
+  in_beta  <- bqtls_beta$asb_q < qthresh
+  neither <- rep(TRUE, nrow(bqtls_beta))
+  my_idx <- bqtls_beta$in_peak & !in_beta & !in_chi_sq
+  group <- rep(1, nrow(bqtls_beta))
+  group[my_idx] <- 2
+  p1 <- ggplot(bqtls_beta[!my_idx,], aes(x=altCount_input/totalCount_input, y =  altCount_IP/totalCount_IP))+
+    geom_point()+
+    geom_point(data = bqtls_beta[my_idx,], color="blue")+
+    #lims(x = c(0,1), y = c(0,1))+
+    geom_abline(slope = 1, intercept = 0, col="red", lty="dashed")+
+    labs(x = "Alt Ratio in Input", y = "Alt Ratio in IP", color = "", title = paste0(rbps[j], " | Significant hits of two models both at q < ",qthresh))
+  p2 <- ggplot(bqtls_beta[my_idx,], aes(x=altCount_input/totalCount_input, y =  altCount_IP/totalCount_IP))+
+    geom_density2d()
+  print(p1)
+  with(bqtls_beta[my_idx,], smoothScatter(x=altCount_input/totalCount_input, y =  altCount_IP/totalCount_IP, main=paste(rbps[j], "| In peak & not significant"), xlim = c(0.3, 0.7), ylim = c(0, 1)))#%>%print
+  abline(0,1,lty='dashed',col='red')
+  abline(h=0.5,lty='dashed',col='red')
+  abline(v=0.5,lty='dashed',col='red')
+  
+  with(bqtls_beta[bqtls_beta$in_peak & (in_beta | in_chi_sq),], smoothScatter(x=altCount_input/totalCount_input, y =  altCount_IP/totalCount_IP, main=paste(rbps[j], "| In peak & significant in either"), xlim = c(0.3, 0.7), ylim = c(0, 1)))#%>%print
+  abline(0,1,lty='dashed',col='red')
+  abline(h=0.5,lty='dashed',col='red')
+  abline(v=0.5,lty='dashed',col='red')
+  
+  with(bqtls_beta[bqtls_beta$in_peak == 1,], smoothScatter(x=altCount_input/totalCount_input, y =  altCount_IP/totalCount_IP, main=paste(rbps[j], "| In peak"), xlim = c(0.3, 0.7), ylim = c(0, 1)))#%>%print
+  abline(0,1,lty='dashed',col='red')
+  abline(h=0.5,lty='dashed',col='red')
+  abline(v=0.5,lty='dashed',col='red')
+  
+  with(bqtls_beta, smoothScatter(x=altCount_input/totalCount_input, y =  altCount_IP/totalCount_IP, main=paste(rbps[j], "| Control"), xlim = c(0.3, 0.7), ylim = c(0, 1)))#%>%print
+  abline(0,1,lty='dashed',col='red')
+  abline(h=0.5,lty='dashed',col='red')
+  abline(v=0.5,lty='dashed',col='red')
+  #print(p2)
+    
+}
+```
+
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  sum_stats <- all_sum_stats[[j]]
+  qthresh = 0.1
+  in_chi_sq <- sum_stats$q.value < qthresh
+  in_beta  <- bqtls_beta$asb_q < qthresh
+  neither <- rep(TRUE, nrow(bqtls_beta))
+  my_idx <- bqtls_beta$in_peak & !in_beta & !in_chi_sq
+  
+  with(bqtls_beta[bqtls_beta$in_peak & in_beta,], smoothScatter(x=altCount_input/totalCount_input, y =  altCount_IP/totalCount_IP, main=paste(rbps[j], "| In peak & significant in beta model"), xlim = c(0.3, 0.7), ylim = c(0, 1)))#%>%print
+  abline(0,1,lty='dashed',col='red')
+  abline(h=0.5,lty='dashed',col='red')
+  abline(v=0.5,lty='dashed',col='red')
+  
+  with(bqtls_beta[bqtls_beta$in_peak & in_chi_sq,], smoothScatter(x=altCount_input/totalCount_input, y =  altCount_IP/totalCount_IP, main=paste(rbps[j], "| In peak & significant in chi-sq model"), xlim = c(0.3, 0.7), ylim = c(0, 1)))#%>%print
+  abline(0,1,lty='dashed',col='red')
+  abline(h=0.5,lty='dashed',col='red')
+  abline(v=0.5,lty='dashed',col='red')
+  
+  with(bqtls_beta[!bqtls_beta$in_peak & in_beta == 1,], smoothScatter(x=altCount_input/totalCount_input, y =  altCount_IP/totalCount_IP, main=paste(rbps[j], "| Not in peak & significant in beta model"), xlim = c(0.3, 0.7), ylim = c(0, 1)))#%>%print
+  abline(0,1,lty='dashed',col='red')
+  abline(h=0.5,lty='dashed',col='red')
+  abline(v=0.5,lty='dashed',col='red')
+  
+  with(bqtls_beta[!bqtls_beta$in_peak & in_chi_sq == 1,], smoothScatter(x=altCount_input/totalCount_input, y =  altCount_IP/totalCount_IP, main=paste(rbps[j], "| significant in chi-sq model"), xlim = c(0.3, 0.7), ylim = c(0, 1)))#%>%print
+  abline(0,1,lty='dashed',col='red')
+  abline(h=0.5,lty='dashed',col='red')
+  abline(v=0.5,lty='dashed',col='red')
+    
+}
+
+```
+
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  sum_stats <- all_sum_stats[[j]]
+  qthresh = 0.05
+  in_chi_sq <- sum_stats$q.value < qthresh
+  in_beta  <- bqtls_beta$asb_q < qthresh
+  neither <- rep(TRUE, nrow(bqtls_beta))
+  my_idx <- bqtls_beta$in_peak & !in_beta & !in_chi_sq
+  
+  with(bqtls_beta[in_beta == 1,], smoothScatter(x=altCount_input/totalCount_input, y =  altCount_IP/totalCount_IP, main=paste(rbps[j], "| significant in beta model"), xlim = c(0.3, 0.7), ylim = c(0, 1)))#%>%print
+  abline(0,1,lty='dashed',col='red')
+  abline(h=0.5,lty='dashed',col='red')
+  abline(v=0.5,lty='dashed',col='red')
+  
+  with(bqtls_beta[in_chi_sq == 1,], smoothScatter(x=altCount_input/totalCount_input, y =  altCount_IP/totalCount_IP, main=paste(rbps[j], "| significant in chi-sq model"), xlim = c(0.3, 0.7), ylim = c(0, 1)))#%>%print
+  abline(0,1,lty='dashed',col='red')
+  abline(h=0.5,lty='dashed',col='red')
+  abline(v=0.5,lty='dashed',col='red')
+    
+}
+
+```
+
+
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  sum_stats <- all_sum_stats[[j]]
+  qthresh = 0.1
+  in_chi_sq <- sum_stats$q.value < qthresh
+  in_beta  <- bqtls_beta$asb_q < qthresh
+  neither <- rep(TRUE, nrow(bqtls_beta))
+  my_idx <- bqtls_beta$in_peak & !in_beta & !in_chi_sq
+  
+  with(bqtls_beta[in_beta == 1,], smoothScatter(x=altCount_input/totalCount_input, y =  totalCount_input, main=paste(rbps[j], "| significant in beta model"), xlim = c(0.3, 0.7)))
+  abline(0,1,lty='dashed',col='red')
+  abline(h=0.5,lty='dashed',col='red')
+  abline(v=0.5,lty='dashed',col='red')
+  
+  with(bqtls_beta[in_beta == 1,], smoothScatter(x=  altCount_IP/totalCount_IP, y = totalCount_IP, main=paste(rbps[j], "| significant in beta model"), xlim = c(0, 1)))
+  abline(0,1,lty='dashed',col='red')
+  abline(h=0.5,lty='dashed',col='red')
+  abline(v=0.5,lty='dashed',col='red')
+    
+}
+
+```
+
+
