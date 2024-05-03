@@ -16,20 +16,34 @@
 # should handle the situation where p is close to 0 or 1
 
 library(tidyverse)
+.libPaths('~/R/x86_64-conda_cos6-linux-gnu-library/3.6')
 require(ashr)
 require(doMC)
 library(data.table)
 #rm(ash_result, dat, deconv, deconv_res, fit, geno, geno_sub, here, input, joined, joined_sub, mat, obs, obs_sub, peaks, res_, res1, res2, res3, res4, results, sim_dat, sum_stats, X)
 
-vcf_file <- "/home/dmeyer/projects/bqtls/sanger.vcf.gz"
-#vcf_file <- "~/projects/bqtls/CIRMlines_flipped.vcf.gz"
-vcf_samples <- system(paste("bcftools query -l", vcf_file), intern=T)
-sample_index <- "CW70142-1-1194512527_CW70142-1-1194512527" # Expected to be this
-#sample_index <- "CW30274-1-1194512543_CW30274-1-1194512543"
-vcf_cmd <- paste0("/bin/bcftools query -s '", sample_index, "' -f '%CHROM %POS %ID %REF %ALT [%GT]\n' ",vcf_file)
-#"/bin/bcftools query -f '%CHROM %POS %ID %REF %ALT [%GT]\n' ",vcf_file)
+vcf_file <- "/gpfs/commons/home/dmeyer/bindingQTL_share/genotype/chrAll_QCFinished_full_2sample.anno.vcf.gz"
+
+input_files <- c('/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-control-tdp/allelic/24a-hNIL-control-tdp_input_allelic.out',
+    '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-c9-tdp/allelic/24a-hNIL-c9-tdp_input_allelic.out',
+    '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-control-tdp/allelic/24a-hNIP-control-tdp_input_allelic.out',
+    '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-c9-tdp/allelic/24a-hNIP-c9-tdp_input_allelic.out')
+ip_files <- c('/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-control-tdp/allelic/24a-hNIL-control-tdp_ip_allelic.out',
+               '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-c9-tdp/allelic/24a-hNIL-c9-tdp_ip_allelic.out',
+               '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-control-tdp/allelic/24a-hNIP-control-tdp_ip_allelic.out',
+               '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-c9-tdp/allelic/24a-hNIP-c9-tdp_ip_allelic.out')
+donors <- c('CTRL-NEUHE723FGT-02545-G', 'CASE-NEUFV237VCZ-01369-G', 'CTRL-NEUHE723FGT-02545-G', 'CASE-NEUFV237VCZ-01369-G')
+
+
+i = 2
+input_file = input_files[i]
+ip_file = ip_files[i]
+sample_index <- donors[i]
+sum_stats_file <- str_replace(input_file, ".out$", ".sum_stats.tsv")
+
+vcf_samples <- system(paste("/nfs/sw/bcftools/bcftools-1.9/bin/bcftools query -l", vcf_file), intern=T)
+vcf_cmd <- paste0("/nfs/sw/bcftools/bcftools-1.9/bin/bcftools query -s '", sample_index, "' -f '%CHROM %POS %ID %REF %ALT [%GT]\n' ",vcf_file)
 vcf <- fread(cmd=vcf_cmd, header = F, sep=" ", col.names = c("chrom", "position", "variantID", "refAllele", "altAllele", "gt"))
-gc()
 vcf$refCount <- 0
 vcf$altCount <- sapply(vcf$gt,
                        function(x) {
@@ -46,14 +60,13 @@ vcf$altCount <- sapply(vcf$gt,
                        })
 vcf$refCount <- 2 - vcf$altCount
 
-
-input = read_tsv("/home/dmeyer/projects/bqtls/tdp43/allelic/tdp43_input_annotated_allelic.out")%>%rename(chrom=1)
+input = read_tsv(input_file)%>%rename(chrom=1)
 print(nrow(input))
 input = input[(input$variantID != "."),]
 print(nrow(input))
 input = input[(input$variantID %in% vcf[vcf$altCount == 1,]$variantID),]
 print(nrow(input))
-input$in_intron = as.numeric((input$in_gene == 1) & (input$in_exon == 0))
+#input$in_intron = as.numeric((input$in_gene == 1) & (input$in_exon == 0))
 input_original = input
 #input_idx = (input$totalCount >= 10) & (input$altCount >= 2) & (input$refCount >= 2)
 sum( (input$totalCount >= 30) & (input$altCount >= 2) & (input$refCount >= 2) )
@@ -67,12 +80,11 @@ input_idx = (input$totalCount >= 30)#& (input$altCount >= 2) & (input$refCount >
 input = input[input_idx,]
 print(nrow(input))
 
-
 nrow(input[input$in_intron == 1,])
 
-ip_data = read_tsv("/home/dmeyer/projects/bqtls/tdp43/allelic/tdp43_ip_allelic.out")%>%rename(chrom=1)%>%
+ip_data = read_tsv(ip_file)%>%rename(chrom=1)%>%
     filter(totalCount >= 0)
-joined=inner_join(input[idx,], ip_data, by = join_by(chrom, position, variantID, refAllele, altAllele))
+joined=inner_join(input, ip_data, by = join_by(chrom, position, variantID, refAllele, altAllele))
 nrow(joined)
 joined%>% # Idea: it would be helpful to know the total counts in the IP data for stuff on the bottom
     ggplot(aes(x = altCount.x/totalCount.x, y = altCount.y/totalCount.y ))+
@@ -85,7 +97,7 @@ joined%>% # Idea: it would be helpful to know the total counts in the IP data fo
 
 plot(density((input$totalCount)))
 
-plot(density(log10(input$totalCount[idx])))
+plot(density(log10(input$totalCount)))
 
 
 print(ggplot(data.table(ci=input$altCount/input$totalCount), aes(x = ci))+
@@ -114,11 +126,24 @@ sum_stats = foreach(i = 1:nrow(input), .combine = bind_rows) %dopar% {
             lor_mean = mean(lor_ci),     
             lor_se = (lor_ci[2] - lor_ci[1])/4 )
 }
-write_tsv(sum_stats, "sum_stats.txt")
 
-nrow(sum_stats)
+write_tsv(sum_stats, sum_stats_file)
+################################# Do filtering here  ##########################################
 
-sum_stats = sum_stats[input_idx,]
+filtered_input_file <- str_replace(input_file, "out$", paste0("filtered_epsilon",epsilon,".txt"))
+
+p = 0.5
+epsilon = 0.3
+ci = sum_stats$or_mean
+idx = apply(sum_stats, 1, function(x) {
+        (x['ci1'] >= p - epsilon) &
+        (x['ci1'] <= x['ci2']) & 
+        (x['ci2'] <= p + epsilon)
+})
+write_tsv(input[idx,], filtered_input_file)
+
+################################# Other stuff for early analysis  ##########################################
+
 # TODO:
 # check that ci[1] <= 0.5 <= c[2] AND that ci[1] and ci[2] both within window of p- epsilon , p+epsilon
 # THEN check that 
@@ -132,18 +157,15 @@ sum_stats = sum_stats[input_idx,]
 # David is a bit worried about there being so many zeros
 # In the imputation results there is a computationally estimated confidence, and it looks good generally when
 # we've matched to sequencing data
-
 # Try putting in the wrong cell line and seeing how the plot differs (do for every cell line maybe?)
-
 # Once you've done this filtering then run the beta model again
-
 # How many are testable? How many does the model think are significant
 
-sum_stats <- read_tsv("sum_stats.txt")
+#sum_stats <- read_tsv("sum_stats.txt")
 nrow(sum_stats[input_idx,])
 
-dev.off()
-pdf("2024-02-08_binomial_test.pdf")
+snp_filtering_pdf <- str_replace(input_file, "_allelic.out$", "_filtering.pdf")
+pdf(snp_filtering_pdf)
 {
 epsilon = 0.3
 p = 0.5
@@ -173,10 +195,6 @@ cat("Intronic SNPs in peaks included to test: ", (sum(idx & input$in_intron& inp
 cat(  "Exonic SNPs in peaks included to test: ", (sum(idx & input$in_exon  & input$in_peak)/sum(input$in_exon  & input$in_peak)*100)%>%round(3), "%\n")
 }
 
-write_tsv(sum_stats, "sum_stats.txt")
-sum_stats <- read_tsv("sum_stats.txt")
-sum_stats <- sum_stats[input_idx,]
-
 if (! all(sum_stats$ci1 <= sum_stats$ci2))
     stop("FIX THIS. Not all ci1 <= ci2")
 
@@ -204,21 +222,21 @@ lapply(c(0.5, 0.4, 0.3, 0.2, 0.1, 0.08, 0.04), filter_snps_summary)%>%
     scale_y_continuous(trans = "log10")
 dev.off()
 
-epsilon <- 0.2
-p <- 0.5
-idx = apply(sum_stats, 1, function(x) {
-        (x['ci1'] >= p - epsilon) &
-            (x['ci1'] <= x['ci2']) & 
-            (x['ci2'] <= p + epsilon) &
-            (x['ci1'] <= 0.5) & (0.5 <= x['ci2'])
-    })
-sum_stats[idx,]
-write_tsv(input[idx,], "/home/dmeyer/projects/bqtls/tdp43/tdp43_filtered_input.txt")
-
-ip_data = read_tsv("/home/dmeyer/projects/bqtls/tdp43/allelic/tdp43_ip_allelic.out")%>%rename(chrom=1)%>%
-    filter(totalCount >= 10)
+#epsilon <- 0.2
+#p <- 0.5
+#idx = apply(sum_stats, 1, function(x) {
+#        (x['ci1'] >= p - epsilon) &
+#            (x['ci1'] <= x['ci2']) & 
+#            (x['ci2'] <= p + epsilon) &
+#            (x['ci1'] <= 0.5) & (0.5 <= x['ci2'])
+#    })
+#sum_stats[idx,]
+#write_tsv(input[idx,], "/home/dmeyer/projects/bqtls/tdp43/tdp43_filtered_input.txt")
+#
+#ip_data = read_tsv("/home/dmeyer/projects/bqtls/tdp43/allelic/tdp43_ip_allelic.out")%>%rename(chrom=1)%>%
+#    filter(totalCount >= 10)
 {
-epsilon = 0.4
+epsilon = 0.3
 p = 0.5
 ci = sum_stats$or_mean
 idx = apply(sum_stats, 1, function(x) {
@@ -239,10 +257,6 @@ joined%>% # Idea: it would be helpful to know the total counts in the IP data fo
     lims(x = c(0.0, 1.0), y = c(0.0,1.0))+
     labs(x = "Input MAF", y = "IP MAF", title = "Epsilon = "%>%paste0(epsilon))
 }
-
-ip_data = read_tsv("/home/dmeyer/projects/bqtls/tdp43/allelic/tdp43_ip_allelic.out")%>%rename(chrom=1)
-min(ip_data$totalCount)
-
 
 # For each epsilon get the totalcounts
 epsilon = 0.4
@@ -300,5 +314,19 @@ for (epsilon in c(0.2, 0.3, 0.4)) {
             (x['ci1'] <= x['ci2']) & 
             (x['ci2'] <= p + epsilon)
     })
-    input[idx,],
+    input[idx,]
 }
+
+
+
+######## Feature level check ##########
+input_1 = read_tsv("/gpfs/commons/groups/knowles_lab/bindingQTL_share/24a-hNIP-control-tdp/features/24a-hNIP-control-tdp_input_hg38_basicv41_genes_fc.txt", skip = 1)
+ip_1 = read_tsv("/gpfs/commons/groups/knowles_lab/bindingQTL_share/24a-hNIP-control-tdp/features/24a-hNIP-control-tdp_ip_hg38_basicv41_genes_fc.txt", skip=1)
+input_2 = read_tsv("/gpfs/commons/groups/knowles_lab/bindingQTL_share/24a-hNIL-control-tdp/features/24a-hNIL-control-tdp_input_hg38_basicv41_genes_fc.txt", skip=1)
+ip_2 = read_tsv("/gpfs/commons/groups/knowles_lab/bindingQTL_share/24a-hNIL-control-tdp/features/24a-hNIL-control-tdp_ip_hg38_basicv41_genes_fc.txt", skip=1)
+
+plot(log10(input_1[[7]]), log10(input_2[[7]]), xlab = 'hNIP control input', ylab = 'hNIL control input')
+abline(0, 1, col = 'red', lty='dashed')
+
+plot(log10(ip_1[[7]]), log10(ip_2[[7]]), xlab = 'hNIP control ip', ylab = 'hNIL control ip')
+abline(0, 1, col = 'red', lty='dashed')
