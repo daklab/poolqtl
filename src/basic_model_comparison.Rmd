@@ -119,7 +119,8 @@ bqtls_beta_files <- paste0(dirname(filtered_input_files),'/',
                           rbps,
                           '_beta_10readsInput_filtered_epsilon0.3_ipreads30_allhet_struct_with_peaks.tsv.gz')
                           #'_beta_filtered_epsilon0.3_ipreads30_struct_with_peaks.tsv.gz')
-bqtls_betas <- lapply(bqtls_beta_files, read_tsv)
+cat(paste(bqtls_beta_files, collapse=" "))
+# bqtls_betas <- lapply(bqtls_beta_files, read_tsv)
 ```
 
 ```{r}

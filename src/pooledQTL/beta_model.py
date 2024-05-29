@@ -213,7 +213,9 @@ def fit(data,
         )
     else: 
         guide = AutoGuideList(model)
+        # If it's not specified in the list "to_optimize" then use the AutoDiagonalNormal, otherwise use AutoDelta
         guide.add(AutoDiagonalNormal(poutine.block(model, hide = to_optimize)))
+        # Everything that is in "to_optimize" gets an AutoDelta, otherwise all AutoDiagonalNormal
         guide.add(AutoDelta(poutine.block(model, expose = to_optimize)))
 
     losses = pyro_utils.fit(model,guide,data,iterations=iterations)

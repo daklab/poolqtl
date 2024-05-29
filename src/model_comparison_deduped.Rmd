@@ -1,0 +1,773 @@
+---
+title: "Model comparison between Chi-Squared and Beta Model"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(doMC)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(readr)
+library(eulerr)
+library(qqman)
+
+registerDoMC(4) # Set number of cores here for parallel processing
+
+donors <- c('CTRL-NEUHE723FGT-02545-G', 'CASE-NEUFV237VCZ-01369-G', 'CTRL-NEUHE723FGT-02545-G', 'CASE-NEUFV237VCZ-01369-G')
+rbps = c("24a-hNIL-control-tdp", "24a-hNIL-c9-tdp", "24a-hNIP-control-tdp", "24a-hNIP-c9-tdp")
+
+epsilon = 0.45
+
+
+ip_files <- c('/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-control-tdp/allelic/24a-hNIL-control-tdp_ip_deduped_allelic.out',
+ '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-c9-tdp/allelic/24a-hNIL-c9-tdp_ip_deduped_allelic.out',
+ '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-control-tdp/allelic/24a-hNIP-control-tdp_ip_deduped_allelic.out',
+ '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-c9-tdp/allelic/24a-hNIP-c9-tdp_ip_deduped_allelic.out')
+
+filtered_input_files <- c(paste0("/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-control-tdp/allelic/24a-hNIL-control-tdp_input_deduped_allelic.10readsInput_filtered_epsilon",epsilon,"_sharedhet.txt"),
+                          paste0("/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-c9-tdp/allelic/24a-hNIL-c9-tdp_input_deduped_allelic.10readsInput_filtered_epsilon",epsilon,"_sharedhet.txt"),
+                          paste0("/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-control-tdp/allelic/24a-hNIP-control-tdp_input_deduped_allelic.10readsInput_filtered_epsilon",epsilon,"_sharedhet.txt"),
+                          paste0("/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-c9-tdp/allelic/24a-hNIP-c9-tdp_input_deduped_allelic.10readsInput_filtered_epsilon",epsilon,"_sharedhet.txt"))
+stopifnot(all(file.exists(filtered_input_files)))
+
+input_files <- c('/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-control-tdp/allelic/24a-hNIL-control-tdp_input_deduped_allelic.out',
+    '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-c9-tdp/allelic/24a-hNIL-c9-tdp_input_deduped_allelic.out',
+    '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-control-tdp/allelic/24a-hNIP-control-tdp_input_deduped_allelic.out',
+    '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-c9-tdp/allelic/24a-hNIP-c9-tdp_input_deduped_allelic.out')
+
+
+donors <- c('CTRL-NEUHE723FGT-02545-G', 'CASE-NEUFV237VCZ-01369-G', 'CTRL-NEUHE723FGT-02545-G', 'CASE-NEUFV237VCZ-01369-G')
+rbps = c("24a-hNIL-control-tdp", "24a-hNIL-c9-tdp", "24a-hNIP-control-tdp", "24a-hNIP-c9-tdp")
+#bqtls_beta_files <- paste0(dirname(filtered_input_files),'/',
+#                          rbps,
+#                          '_beta_10readsInput_filtered_epsilon0.3_ipreads30_allhet_struct_with_peaks.tsv.gz')
+#                          #'_beta_filtered_epsilon0.3_ipreads30_struct_with_peaks.tsv.gz')
+#bqtls_betas <- lapply(bqtls_beta_files, read_tsv)
+```
+
+```{r}
+IP_dats <- lapply(1:length(rbps), function(j) { read_tsv(ip_files[j]) })
+input_dats <- lapply(1:length(rbps), function(j) { read_tsv(input_files[j]) })
+```
+
+Check out some of the things that get binom filtered out
+```{r}
+tmp <- read_tsv(filtered_input_files[1])
+badvars = setdiff(filter(input_dats[[1]], totalCount >= 30)$variantID, tmp$variantID)
+badvars = intersect(badvars, filter(IP_dats[[1]], totalCount >= 30)$variantID)
+badvars = intersect(badvars, het_snps)
+print(length(badvars))
+
+input_dats[[1]]%>%filter(variantID %in% badvars)
+IP_dats[[1]]%>%filter(variantID %in% badvars)
+```
+
+
+```{r}
+epsilon = 0.45
+bqtls_beta_files <- paste0(dirname(filtered_input_files),'/',
+                          rbps,
+                          '_beta_deduped_10readsInput_filtered_epsilon', epsilon, '_ipreads30_allhet_struct_with_peaks.tsv.gz')
+                          #'_beta_filtered_epsilon0.3_ipreads30_struct_with_peaks.tsv.gz')
+bqtls_betas <- lapply(bqtls_beta_files, read_tsv)
+```
+
+```{r}
+bqtls_betas[[1]]
+```
+
+
+## Run chi-squared tests to test if the distribution of alt and ref counts are the same between the two groups (IP and input) or different
+
+```{r}
+chisq_files <- paste0(dirname(filtered_input_files),'/', rbps,  '_chisq_results_deduped.txt')
+all_chisq <- lapply(chisq_files, data.table::fread)
+```
+
+```{r}
+chisq_files <- paste0(dirname(filtered_input_files),'/', rbps,  '_chisq_results_deduped.txt')
+all_chisq <- lapply(1:length(rbps), function(j) {
+    input = input_dats[[j]]
+    input = input[input$variantID %in% setdiff(readLines("../both_het_snps.txt"), readLines("indel_snps.txt")),]
+    ip = IP_dats[[j]]
+    shared_snps = intersect(input$variantID, ip$variantID)
+    input = input[match(shared_snps, input$variantID),]
+    ip = ip[match(shared_snps, ip$variantID),]
+          
+    chisq = foreach(i = 1:length(shared_snps), .combine = bind_rows) %dopar% {
+        input_ref_count <- input$refCount[i]
+        input_alt_count <- input$altCount[i]
+        IP_ref_count <- ip$refCount[i]
+        IP_alt_count <- ip$altCount[i]
+    
+        contingency_table <- matrix(c(input_ref_count, input_alt_count, IP_ref_count, IP_alt_count), 
+                                     nrow = 2, 
+                                     byrow = TRUE,
+                                     dimnames = list(c("Input", "IP"), c("Ref", "Alt")))
+    
+        # Perform chi-squared test
+        chi_square_result <- chisq.test(contingency_table)
+        
+        # Calculate proportions in each group
+        prop_input <- input_ref_count / (input_ref_count + input_alt_count)
+        prop_IP <- IP_ref_count / (IP_ref_count + IP_alt_count)
+        
+        # Calculate log ratio of proportions
+        log_ratio_prop <- log10(prop_IP) - log10(prop_input)
+        
+        res <- with(chi_square_result, tibble(statistic, parameter, p.value, lor = log_ratio_prop))
+        
+        ip[i,c(1,2,3,4,5)]%>%
+          cbind(tibble(refCount_input = input_ref_count, altCount_input = input_alt_count, refCount_IP = IP_ref_count, altCount_IP = IP_alt_count))%>%
+          cbind(res)
+    }
+    
+    chisq$q.value = p.adjust(chisq$p.value, method = 'fdr')
+    write_tsv(chisq, chisq_files[j])
+    return(chisq)
+})
+
+```
+
+## Run binomial tests
+
+```{r}
+registerDoMC(2) # Set number of cores here for parallel processing
+het_snps <- setdiff(readLines("../both_het_snps.txt"), readLines("indel_snps.txt"))
+bIP <- lapply(1:length(rbps), function(j) {
+  dat <- IP_dats[[j]]%>%filter(variantID %in% het_snps, totalCount >= 30)
+  binom_res = foreach(i = 1:nrow(dat), .combine = bind_rows) %dopar% {
+    res = binom.test(dat$altCount[i],dat$totalCount[i], p=0.5)
+    with(res, tibble(statistic, parameter, p.value, conf.int[1], conf.int[2], estimate))
+  }
+  res <- cbind(dat, binom_res)
+  res$q.value <- p.adjust(res$p.value, 'fdr')
+  return(res)
+})
+
+saveRDS(binom_results, "binom_results_IP_hets_deduped.RDS")
+
+bIn <- lapply(1:length(rbps), function(j) {
+  dat <- input_dats[[j]]%>%filter(variantID %in% het_snps, totalCount >= 10)
+  binom_res = foreach(i = 1:nrow(dat), .combine = bind_rows) %dopar% {
+    res = binom.test(dat$altCount[i],dat$totalCount[i], p=0.5)
+    with(res, tibble(statistic, parameter, p.value, conf.int[1], conf.int[2], estimate))
+  }
+  res <- cbind(dat, binom_res)
+  res$q.value <- p.adjust(res$p.value, 'fdr')
+  return(res)
+})
+saveRDS(binom_results, "binom_results_input_hets_deduped.RDS")
+```
+
+
+```{r}
+arrow::write_feather(data.table::rbindlist(bIn), "binom_results_input_hets_deduped.feather")
+arrow::write_feather(data.table::rbindlist(bIP), "binom_results_IP_hets_deduped.feather")
+```
+
+```{r}
+bIn <- readRDS("binom_results_input_hets_deduped.RDS")
+bIP <- readRDS("binom_results_IP_hets_deduped.RDS")
+```
+
+```{r}
+bIP[[1]]%>%filter(variantID %in% c("rs12973192" , "rs12608932"))
+```
+
+```{r}
+c("rs12973192" , "rs12608932")%in% readLines("../both_het_snps.txt")
+```
+
+## Visualizing significant hits from each model
+```{r}
+for (j in 1:length(rbps)) {
+    bqtls_beta <- bqtls_betas[[j]]
+    chisq <- all_chisq[[j]]
+    for (qthresh in c(0.05)) {
+        p1 <- ggplot(bqtls_beta, aes(x = asb_loc, y = ase_loc)) +
+            geom_point(data=filter(bqtls_beta,asb_q >= qthresh), color='black')+
+            geom_point(data=filter(bqtls_beta,asb_q < qthresh), color='#36ba59') +
+            labs(x = "ASB effect size", y = "ASE effect size", title = str_glue("{sum(bqtls_beta$asb_q < qthresh)} SNPs with q < {qthresh} | beta model for {rbps[j]}"))
+        p2 <- ggplot(bqtls_beta, aes(x = asb_loc, y = ase_loc)) +
+            geom_point(data=bqtls_beta[chisq$q.value >= qthresh,], color='black')+
+            geom_point(data=bqtls_beta[chisq$q.value < qthresh,], color='#36ba59') +
+            labs(x = "ASB effect size", y = "ASE effect size", title = str_glue("{sum(chisq$q.value < qthresh)} SNPs with q < {qthresh} | chi squared model for {rbps[j]}"))
+        print(p1)
+        print(p2)
+    }
+}
+```
+
+
+## How many significant hits are in peaks?
+```{r}
+qthresh = 0.05
+x = bqtls_beta[bqtls_beta$asb_q < qthresh,]
+y = bqtls_beta[chisq$q.value < qthresh,]
+x_idx = x$in_peak == 1
+y_idx = y$in_peak == 1
+cat(sum(x_idx)%>%paste0(" out of ", nrow(x), " ", round(sum(x_idx)/nrow(x)*100,3), "% of variants in peaks under chi-squared model"), "\n")
+cat(sum(y_idx)%>%paste0(" out of ", nrow(y), " ", round(sum(y_idx)/nrow(y)*100,3), "% of variants in peaks under beta model"), "\n")
+cat(paste0(
+        length(intersect(x$variantID, y$variantID)), " ",
+        length(union(x$variantID, y$variantID)), " ",
+        round(length(intersect(x$variantID, y$variantID))/ length(union(x$variantID, y$variantID))*100,  3),
+        "% of variants in common between the two models"
+      ), '\n')
+```
+
+## Shared rbQTLs Venn-diagram (looking across all 4 samples)
+
+```{r}
+bqtls_betas%>%lapply(function(x) x$variantID)%>%
+  `names<-`(rbps)%>%
+  venn%>%
+  plot
+```
+
+## Manhattan plots across all 4 conditions for both models
+```{r}
+for (j in 1:length(bqtls_betas)) {
+    bqtls_beta <- bqtls_betas[[j]]
+    manhattan_plot <- manhattan(data.frame(CHR = bqtls_beta$chrom%>%str_extract("[0-9]+")%>%as.integer, 
+                                           BP = bqtls_beta$position,
+                                           SNP = bqtls_beta$variantID,
+                                           P = bqtls_beta$asb_q), main = paste0(rbps[j], "beta model"))
+    print(manhattan_plot)
+    manhattan_plot <- manhattan(data.frame(CHR = bqtls_beta$chrom%>%str_extract("[0-9]+")%>%as.integer, 
+                                           BP = bqtls_beta$position,
+                                           SNP = bqtls_beta$variantID,
+                                           P = all_chisq[[j]]$q.value), main = paste0(rbps[j], "Chi-squared model"))
+    print(manhattan_plot)
+}
+
+
+```
+
+
+## Further investigation into where significant hits between two models vary
+
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  chisq <- all_chisq[[j]]
+  qthresh = 0.05
+  in_chi_sq <- chisq$q.value < qthresh
+  in_beta  <- bqtls_beta$asb_q < qthresh
+  idx <- !in_chi_sq & in_beta
+  p1 = ggplot(bqtls_beta, aes(x = asb_loc, y = ase_loc, text = variantID)) +
+   geom_point(data=bqtls_beta[!idx,], color='black')+
+   geom_point(data=bqtls_beta[idx,], color='#36ba59') +
+   labs(x = "ASB effect size", y = "ASE effect size", title = str_glue("{sum(idx)} SNPs with q < {qthresh} in beta but not in chi-sq model q < {qthresh}"))
+  idx <- in_chi_sq & !in_beta
+  p2 = ggplot(bqtls_beta, aes(x = asb_loc, y = ase_loc, text = variantID)) +
+   geom_point(data=bqtls_beta[!idx,], color='black')+
+   geom_point(data=bqtls_beta[idx,], color='#36ba59') +
+   labs(x = "ASB effect size", y = "ASE effect size", title = str_glue("{sum(idx)} SNPs with q < {qthresh} in chi squared model but not in beta model q < {qthresh}"))
+  print(p1)
+  print(p2)
+}
+```
+
+
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  chisq <- all_chisq[[j]]
+  in_chi_sq <- chisq$q.value < 0.05
+  in_beta  <- bqtls_beta$asb_q < 0.05
+  idx <- !in_chi_sq & in_beta
+  cat(rbps[j],'\n')
+  cat(sum(idx), ' in beta and not in chi-squared\n')
+  idx <- in_chi_sq & !in_beta
+  cat(sum(idx), ' in chi-squared and not in beta\n')
+  cat("\n-------------------------------------------\n")
+}
+```
+
+
+In 24a-hNIP-c9-tdp, rs33943686 looks like it's right before a junction and upstream of a peak. This was found by chi-squared but not by the beta model.
+
+In 24a-hNIP-c9-tdp, looks like it's right before a junction and upstream of a peak
+
+## High-effect-size hits that align between two models:
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  chisq <- all_chisq[[j]]
+  in_chi_sq <- chisq$q.value < 0.01
+  in_beta  <- bqtls_beta$asb_q < 0.01
+  idx <- in_chi_sq & in_beta & abs(bqtls_beta$asb_loc) > 1.3
+  cat(rbps[j],'\n')
+  cat(paste(bqtls_beta$variantID[idx], collapse = "\n"))
+  cat("\n-------------------------------------------\n")
+}
+```
+## From 24a-hNIL-control-tdp rs56264956, found by beta model and not by chi-squared model is somewhat near a peak
+
+```{r}
+bqtls_betas[[1]]%>%filter(variantID == "rs56264956")
+```
+
+## How many SNPs are in peaks?
+
+### Look at overlap of these between the models and between the samples
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  chisq <- all_chisq[[j]]
+  in_chi_sq <- chisq$q.value < 0.01
+  in_beta  <- bqtls_beta$asb_q < 0.01
+  cat(rbps[j],'\n')
+  idx <- in_chi_sq & !in_beta & bqtls_beta$in_peak
+  cat(sum(idx), ' in peaks chi sq only\n')
+  idx <- in_beta & !in_chi_sq & bqtls_beta$in_peak
+  cat(sum(idx), ' in peaks beta only\n')
+  idx <- in_beta & in_chi_sq & bqtls_beta$in_peak
+  cat(sum(idx), ' in peaks both\n')
+  cat("\n-------------------------------------------\n")
+}
+```
+
+```{r}
+for (j in 1:length(bqtls_betas)) {
+bqtls_beta <- bqtls_betas[[j]]
+chisq <- all_chisq[[j]]
+in_chi_sq <- chisq$q.value < 0.05
+in_beta  <- bqtls_beta$asb_q < 0.05
+group <- rep('', nrow(bqtls_beta))
+group[!in_chi_sq & !in_beta] <-  "Not significant"
+group[in_chi_sq & !in_beta] <- "Significant in Chi-Squared Model only"
+group[!in_chi_sq & in_beta] <-  "Significant in Beta Model only"
+group[in_chi_sq & in_beta] <-  "Significant in both models"
+# Plotting input ratio vs IP ratio and seeing if it’s called a bqtl by one model, another, or both
+p <- ggplot(bqtls_beta[!(!in_chi_sq & !in_beta),], aes(x=altCount_input/totalCount_input, y =  altCount_IP/totalCount_IP, color=group[!(!in_chi_sq & !in_beta)]))+
+  geom_point(aes(color = 'black'), data = bqtls_beta[group == "Not significant",], color="black")+
+  geom_point()+
+  #lims(x = c(0,1), y = c(0,1))+
+geom_abline(slope = 1, intercept = 0, col="red", lty="dashed")+
+    labs(x = "Alt Ratio in Input", y = "Alt Ratio in IP", color = "", title = paste0(rbps[j], " | Significant hits of two models both at q < .05"))
+print(p)
+}
+```
+
+
+## Looking at UNC13A locus (a particular locus interesting to ALS biology)
+```{r}
+# UNC13A
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  chisq <- all_chisq[[j]]
+  in_chi_sq <- chisq$q.value < 0.05
+  in_beta  <- bqtls_beta$asb_q < 0.05
+  in_unc13a = with(bqtls_beta, (position >= 17601336) & (position <= 17688365))
+  cat(rbps[j],'\n')
+  cat(sum(in_unc13a), "SNPs in UNC13A made it past filtering\n")
+  cat(sum(in_unc13a & in_chi_sq), "SNPs in UNC13A significant by chi-sq model\n")
+  cat(sum(in_unc13a & in_beta), "SNPs in UNC13A significant by beta model\n")
+  cat("\n-------------------------------------------\n")
+}
+```
+
+
+## Looking at read counts for significant hits -- replacing x axis with geometric mean of input and IP totalCount
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  chisq <- all_chisq[[j]]
+  in_chi_sq <- chisq$q.value < 0.05
+  in_beta  <- bqtls_beta$asb_q < 0.05
+  x=bqtls_beta$totalCount_input
+  y=bqtls_beta$totalCount_IP
+  #dat <- data.table(totalCount_input = c(x[in_chi_sq], x[in_beta], x[!in_beta & !in_chi_sq]),
+  #           totalCount_IP = c(y[in_chi_sq], y[in_beta], y[!in_beta & !in_chi_sq]),
+  #           group = rep(c("ChiSq", "Beta", "Neither"), c(sum(in_chi_sq), sum(in_beta), sum(!in_beta & !in_chi_sq))))
+  dat <- data.frame(totalCount_input = c(x[in_chi_sq], x[in_beta], x),
+             totalCount_IP = c(y[in_chi_sq], y[in_beta], y),
+             group = rep(c("ChiSq", "Beta", "Baseline"), c(sum(in_chi_sq), sum(in_beta), nrow(bqtls_beta))))
+  p1 <- ggplot(dat,aes(x = totalCount_input, color=group))+
+    geom_density()+
+    scale_x_log10()+
+    labs(title = paste(rbps[j],"| # of reads input"))
+  p2 <- ggplot(dat,aes(x = totalCount_IP, color=group))+
+    geom_density()+
+    scale_x_log10()+
+    labs(title = paste(rbps[j],"| # of reads IP"))
+  p3 <- ggplot(dat,aes(x = sqrt(totalCount_input*totalCount_IP), color=group))+
+    geom_density()+
+    scale_x_log10()+
+    labs(title = paste(rbps[j],"| geometric mean of # of reads"))
+  #print(p1)
+  print(p3)
+}
+```
+
+
+```{r}
+lapply(1:length(bqtls_betas), function(j) {
+  bqtls_beta <- bqtls_betas[[j]]
+  chisq <- all_chisq[[j]]
+  in_chi_sq <- chisq$q.value < 0.05
+  in_beta  <- bqtls_beta$asb_q < 0.05
+  c(sum(in_chi_sq), sum(in_beta), sum(!in_beta & !in_chi_sq))
+}) -> res
+x = as.data.frame(Reduce(res, f=rbind))
+names(x) = c("ChiSq", "Beta", "Neither")
+x
+```
+
+## Top hits for beta model
+
+```{r}
+lapply(1:length(bqtls_betas), function(j) {
+  bqtls_beta <- bqtls_betas[[j]]
+  chisq <- all_chisq[[j]]
+  in_chi_sq <- chisq$q.value < 0.05
+  in_beta  <- bqtls_beta$asb_q < 0.05
+  bqtls_beta[in_beta,]
+}) -> res
+
+res[[1]]%>%arrange(asb_q)
+```
+
+
+## Top hits for chi-squared model
+
+```{r}
+lapply(1:length(bqtls_betas), function(j) {
+  bqtls_beta <- bqtls_betas[[j]]
+  chisq <- all_chisq[[j]]
+  in_chi_sq <- chisq$q.value < 0.05
+  in_beta  <- bqtls_beta$asb_q < 0.05
+  cbind(bqtls_beta, chisq)[in_chi_sq,]%>%as_tibble
+}) -> res
+
+res[[1]]%>%arrange(q.value)
+```
+
+
+```{r}
+lapply(1:length(bqtls_betas), function(j) {
+  bqtls_beta <- bqtls_betas[[j]]
+  chisq <- all_chisq[[j]]
+  in_chi_sq <- chisq$q.value < 0.05
+  in_beta  <- bqtls_beta$asb_q < 0.05
+  c(rbps[j],
+    sum(in_chi_sq), 
+    sum(in_beta), 
+    nrow(bqtls_beta),
+    #sum(!in_beta & !in_chi_sq),
+    sum(in_chi_sq & bqtls_beta$in_peak),
+    sum(in_beta & bqtls_beta$in_peak),
+    #sum(!in_beta & !in_chi_sq & bqtls_beta$in_peak),
+    sum(bqtls_beta$in_peak),
+    sum(in_chi_sq & bqtls_beta$near_peak_100k),
+    sum(in_beta & bqtls_beta$near_peak_100k),
+    sum(bqtls_beta$near_peak_100k)
+    )
+}) -> res
+x = as.data.frame(Reduce(res, f=rbind))
+names(x) = c('rbp',"ChiSq", "Beta", "Everything", "ChiSq In Peak", "Beta In Peak", "Everything In Peak","ChiSq Near Peak", "Beta Near Peak", "Everything Near Peak")
+x
+```
+
+## qq-plots
+
+```{r}
+bqtls_betas[[1]]$asb_q%>%qq(main="Beta ASB q-values")%>%print
+all_chisq[[1]]$p.value%>%p.adjust(method='fdr')%>%qq(main = "Chi-Sq q-values")%>%print
+```
+
+## Venn diagram of overlap between significant hits of two models in hNIL-control
+
+```{r}
+j = 1
+bqtls_beta <- bqtls_betas[[j]]
+chisq <- all_chisq[[j]]
+in_chi_sq <- chisq$q.value < 0.05
+in_beta  <- bqtls_beta$asb_q < 0.05
+
+list(chiSq = bqtls_beta$variantID[in_chi_sq],
+     beta = bqtls_beta$variantID[in_beta])%>%
+venn%>%
+plot
+```
+
+
+
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  chisq <- all_chisq[[j]]
+  in_chi_sq <- chisq$q.value < 0.05
+  in_beta  <- bqtls_beta$asb_q < 0.05
+  # I want to know for the chisq data if there are any SNPs that have 0s in the input
+  .idx = with(bqtls_beta, in_beta & (altCount_input == 0 | refCount_input == 0))
+  print(sum(.idx))
+}
+```
+
+
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  p = bqtls_beta%>%
+    ggplot(aes(x = sort(asb_q), y = sort(ase_q)))+
+    geom_point(shape=1, alpha = 0.5)+
+    geom_abline(slope = 1, intercept = 0, linetype='dashed', color='red')+
+    labs(x = "Allele-Specific Binding q-value (sorted)", y = "Allele-Specific Expression q-value (sorted)",
+         title=rbps[j])
+  print(p)
+  p = bqtls_beta%>%
+    ggplot(aes(x = sort(-log10(asb_q)), y = sort(-log10(ase_q))))+
+    geom_point(shape=1, alpha=0.5)+
+    geom_abline(slope = 1, intercept = 0, linetype='dashed', color='red')+
+    labs(x = "Allele-Specific Binding q-value (sorted -log10)", y = "Allele-Specific Expression q-value (sorted -log10)",
+         title=rbps[j])
+  print(p)
+}
+```
+
+```{r}
+
+lapply(1:length(bqtls_betas), function(j) {
+  bqtls_beta <- bqtls_betas[[j]]
+  bqtls_beta$variantID[bqtls_beta$ase_q < .05]
+})%>%
+`names<-`(rbps)%>%
+  venn%>%
+  plot(main='ASE significant hits (q < .05) q-value sharing')
+```
+
+## Venn Diagrams
+
+Venn diagram of all SNPs tested for each method
+```{r}
+for (j in 1:length(rbps)) {
+  bqtl_methods <- c("binom_input", "binom_IP", "chisq", "beta_asb")
+  binom_input_variants <- filter(input_dats[[j]], variantID %in% het_snps, totalCount >= 10)$variantID
+  binom_ip_variants <- filter(IP_dats[[j]], variantID %in% het_snps, totalCount >= 30)$variantID
+  list(binom_input_variants,
+    binom_ip_variants,
+    all_chisq[[j]]$variantID,
+    bqtls_betas[[j]]$variantID
+    )%>%
+  `names<-`(bqtl_methods)%>%
+    venn%>%
+    plot(main=paste(rbps[j], "all SNPs tested"))%>%print
+}
+```
+```{r}
+nrow(bIn[[1]])
+nrow(filter(input_dats[[1]], totalCount >= 10, variantID %in% het_snps))
+filter(bIn[[1]], q.value < .05)%>%nrow
+filter(all_chisq[[1]], q.value < .05)%>%nrow
+c(length(all_chisq[[1]]$variantID), length(unique(all_chisq[[1]]$variantID)))
+
+```
+
+```{r}
+lapply(1:length(rbps), function(j) {
+list(
+  (bIn[[j]])$variantID%>%length,
+  (bIP[[j]])$variantID%>%length,
+  (all_chisq[[j]])$variantID%>%length,
+  (bqtls_betas[[j]])$variantID%>%length)%>%
+  `names<-`(bqtl_methods%>%paste0("_tested"))%>%
+    as.data.frame
+})%>%
+(data.table::rbindlist)
+```
+
+```{r}
+lapply(1:length(rbps), function(j) {
+list(
+  filter(bIn[[j]], q.value < .05)$variantID%>%length,
+  filter(bIP[[j]], q.value < .05)$variantID%>%length,
+  filter(all_chisq[[j]], q.value < .05)$variantID%>%length,
+  filter(bqtls_betas[[j]], asb_q < .05)$variantID%>%length)%>%
+  `names<-`(bqtl_methods)%>%
+    as.data.frame
+})%>%
+  (data.table::rbindlist)
+```
+
+```{r}
+for (j in 1:length(rbps)) {
+  bqtl_methods <- c("binom_input", "binom_IP", "chisq", "beta_asb")
+  
+  list(
+    filter(bIn[[j]], q.value < .05)$variantID,
+    filter(bIP[[j]], q.value < .05)$variantID,
+    filter(all_chisq[[j]], q.value < .05)$variantID,
+    filter(bqtls_betas[[j]], asb_q < .05)$variantID)%>%
+  `names<-`(bqtl_methods)%>%
+    venn%>%
+    plot(main=paste(rbps[j], "significant (q < 0.05) SNPs"))%>%print
+}
+
+```
+
+
+```{r}
+for (j in 1:length(rbps)) {
+  bqtl_methods <- c("binom_input", 
+                    "binom_IP", 
+                    #"chisq",
+                    "beta_ase",
+                    "beta_asb"
+                    )
+  
+  list(
+    filter(bIn[[j]], q.value < .05)$variantID,
+    filter(bIP[[j]], q.value < .05)$variantID,
+    #filter(all_chisq[[j]], q.value < .05)$variantID,
+    filter(bqtls_betas[[j]], ase_q < .05)$variantID,
+    filter(bqtls_betas[[j]], asb_q < .05)$variantID
+    )%>%
+  `names<-`(bqtl_methods)%>%
+    venn%>%
+    plot(main=paste(rbps[j], "significant (q < 0.05) SNPs"))%>%print
+}
+```
+```{r}
+j = 1
+bqtls_betas[[j]]%>%filter(asb_q < .05, in_intron == 1)%>%arrange(asb_q)
+bIP[[j]]%>%inner_join(IP_dats_ann[[j]])%>%filter(q.value < .05, in_intron == 1)%>%arrange(q.value)
+```
+
+
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  chisq <- all_chisq[[j]]
+  in_chi_sq <- chisq$q.value < 0.05
+  in_beta  <- bqtls_beta$asb_q < 0.05
+  dat = bqtls_beta%>%inner_join(bIP[[j]]%>%rename(chrom=contig), by = c("chrom", "position", "variantID", "refAllele", "altAllele"))
+  dat$q.value <- p.adjust(dat$p.value, "fdr")
+  in_binom <- dat$q.value < .05
+  stopifnot(all(dat$variantID == bqtls_beta$variantID))
+  #dat = bqtls_beta%>%inner_join(bIn[[j]]%>%rename(chrom=contig), by = c("chrom", "position", "variantID", "refAllele", "altAllele"))
+  dat = bIn[[j]]
+  dat$q.value <- p.adjust(dat$p.value, "fdr")
+  in_binom_input <- dat$q.value < .05
+  #stopifnot(all(dat$variantID == bqtls_beta$variantID))
+  list(
+    binom_IP   = bqtls_beta$variantID[in_binom],
+    binom_input= dat$variantID[in_binom_input],
+    beta       = bqtls_beta$variantID[in_beta],
+    #beta_ase      = bqtls_beta$variantID[bqtls_beta$ase_q < .05],
+    chisq      = bqtls_beta$variantID[in_chi_sq]
+  )%>%venn%>%plot(main = rbps[j])%>%print
+}
+```
+
+```{r}
+for (j in 1:length(bqtls_betas)) {
+  bqtls_beta <- bqtls_betas[[j]]
+  chisq <- all_chisq[[j]]
+  in_chi_sq <- chisq$q.value < 0.05
+  in_beta  <- bqtls_beta$asb_q < 0.05
+  dat = bqtls_beta%>%inner_join(bIP[[j]]%>%rename(chrom=contig), by = c("chrom", "position", "variantID", "refAllele", "altAllele"))
+  dat$q.value <- p.adjust(dat$p.value, "fdr")
+  in_binom <- dat$q.value < .05
+  stopifnot(all(dat$variantID == bqtls_beta$variantID))
+  #dat = bqtls_beta%>%inner_join(bIn[[j]]%>%rename(chrom=contig), by = c("chrom", "position", "variantID", "refAllele", "altAllele"))
+  dat = bIn[[j]]
+  dat$q.value <- p.adjust(dat$p.value, "fdr")
+  in_binom_input <- dat$q.value < .05
+  #stopifnot(all(dat$variantID == bqtls_beta$variantID))
+  list(
+    binom_IP   = bqtls_beta$variantID[in_binom],
+    binom_input= dat$variantID[in_binom_input],
+    beta       = bqtls_beta$variantID[in_beta],
+    beta_ase      = bqtls_beta$variantID[bqtls_beta$ase_q < .05]
+    #chisq      = bqtls_beta$variantID[in_chi_sq]
+  )%>%venn%>%plot(main = rbps[j], fill = c(7,2,3,5))%>%print
+}
+```
+
+```{r}
+binom_results_files <- paste0(dirname(filtered_input_files),'/', rbps, '_binomresults.txt')
+for (j in 1:length(rbps)) {
+  bIn[[j]]%>%inner_join(bIP[[j]], by = c("contig", "position", "variantID", "refAllele", "altAllele"), suffix = c("_input", "_IP"))%>%
+    rename(chrom=contig)%>%
+    mutate(
+      q.value_input = p.adjust(p.value_input, 'fdr'),
+      q.value_IP = p.adjust(p.value_IP, 'fdr'))%>%
+    write_tsv(binom_results_files[j])
+}
+cat(paste0('[', paste(paste0('"', binom_results_files, '"'), collapse=",\n"), ']'))
+```
+
+```{r}
+j = 1
+bIn[[j]]%>%inner_join(bIP[[j]], by = c("contig", "position", "variantID", "refAllele", "altAllele"), suffix = c("_input", "_IP"))%>%
+  rename(chrom=contig)%>%
+  mutate(
+    q.value_input = p.adjust(p.value_input, 'fdr'),
+    q.value_IP = p.adjust(p.value_IP, 'fdr'))%>%
+  filter(variantID == "rs113951577")
+```
+
+```{r}
+"[ACGT][ACGT]+"
+```
+
+## SNPs in peaks
+```{r}
+IP_dats_ann <- lapply(1:length(rbps), function(i) {
+  paste0(dirname(input_files[i]),'/',rbps[i],'_ip_deduped_allelic_annotated.out')%>%read_tsv
+})
+```
+
+```{r}
+filter(bIP[[1]], q.value < .05)%>%
+inner_join(IP_dats_ann[[1]], by = join_by(position, variantID, refAllele, altAllele, refCount, altCount, totalCount))
+```
+
+
+```{r}
+
+lapply(1:length(rbps), function(j) {
+  
+  bipsig <- inner_join(bIP[[j]], IP_dats_ann[[j]],
+                       by = join_by(position, variantID, refAllele, altAllele, refCount, altCount, totalCount))%>%
+    filter(in_peak == 1, q.value < .05)
+  chisqsig <- inner_join(all_chisq[[j]], IP_dats_ann[[j]],
+                       by = join_by(position, variantID, refAllele, altAllele))%>%
+    filter(in_peak == 1, q.value < .05)
+  betasig <- bqtls_betas[[j]]%>%filter(in_peak == 1, asb_q < .05)
+  list(
+    bipsig,
+    chisqsig,
+    betasig
+  )%>%
+  lapply(nrow)%>%
+  `names<-`(c('binom_IP signif in peak', 'chisq signif in peak', 'beta signif in peak'))%>%
+    as.data.frame
+})%>%
+(data.table::rbindlist)
+```
+
+```{r}
+lapply(1:length(rbps), function(j) {
+list(
+  filter(bIn[[j]], q.value < .05)$variantID%>%length,
+  filter(bIP[[j]], q.value < .05)$variantID%>%length,
+  filter(all_chisq[[j]], q.value < .05)$variantID%>%length,
+  filter(bqtls_betas[[j]], asb_q < .05)$variantID%>%length)%>%
+  `names<-`(bqtl_methods)%>%
+    as.data.frame
+})%>%
+  (data.table::rbindlist)

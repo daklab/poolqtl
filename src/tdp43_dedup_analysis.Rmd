@@ -1,0 +1,56 @@
+---
+title: "TDP-43 Remove PCR duplicates analysis"
+output: html_notebook
+---
+
+```{r}
+library(doMC)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(readr)
+library(eulerr)
+library(qqman)
+
+registerDoMC(2) # Set number of cores here for parallel processing
+
+input_files <- c('/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-control-tdp/allelic/24a-hNIL-control-tdp_input_allelic.out',
+    '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-c9-tdp/allelic/24a-hNIL-c9-tdp_input_allelic.out',
+    '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-control-tdp/allelic/24a-hNIP-control-tdp_input_allelic.out',
+    '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-c9-tdp/allelic/24a-hNIP-c9-tdp_input_allelic.out')
+ip_files <- c('/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-control-tdp/allelic/24a-hNIL-control-tdp_ip_allelic.out',
+               '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-c9-tdp/allelic/24a-hNIL-c9-tdp_ip_allelic.out',
+               '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-control-tdp/allelic/24a-hNIP-control-tdp_ip_allelic.out',
+               '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-c9-tdp/allelic/24a-hNIP-c9-tdp_ip_allelic.out')
+filtered_input_files <- c("/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-control-tdp/allelic/24a-hNIL-control-tdp_input_allelic.10readsInput_filtered_epsilon0.3_sharedhet.txt",
+                          "/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-c9-tdp/allelic/24a-hNIL-c9-tdp_input_allelic.10readsInput_filtered_epsilon0.3_sharedhet.txt",
+                          "/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-control-tdp/allelic/24a-hNIP-control-tdp_input_allelic.10readsInput_filtered_epsilon0.3_sharedhet.txt",
+                          "/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-c9-tdp/allelic/24a-hNIP-c9-tdp_input_allelic.10readsInput_filtered_epsilon0.3_sharedhet.txt")
+
+# Deduped version
+input_files_deduped <- c('/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-control-tdp/allelic/24a-hNIL-control-tdp_input_deduped_allelic.out',
+    '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-c9-tdp/allelic/24a-hNIL-c9-tdp_input_deduped_allelic.out',
+    '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-control-tdp/allelic/24a-hNIP-control-tdp_input_deduped_allelic.out',
+    '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-c9-tdp/allelic/24a-hNIP-c9-tdp_input_deduped_allelic.out')
+ip_files_deduped <- c('/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-control-tdp/allelic/24a-hNIL-control-tdp_ip_deduped_allelic.out',
+               '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-c9-tdp/allelic/24a-hNIL-c9-tdp_ip_deduped_allelic.out',
+               '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-control-tdp/allelic/24a-hNIP-control-tdp_ip_deduped_allelic.out',
+               '/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-c9-tdp/allelic/24a-hNIP-c9-tdp_ip_deduped_allelic.out')
+filtered_input_files_deduped <- c("/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-control-tdp/allelic/24a-hNIL-control-tdp_input_deduped_allelic.10readsInput_filtered_epsilon0.3_sharedhet.txt",
+                          "/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIL-c9-tdp/allelic/24a-hNIL-c9-tdp_input_deduped_allelic.10readsInput_filtered_epsilon0.3_sharedhet.txt",
+                          "/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-control-tdp/allelic/24a-hNIP-control-tdp_input_deduped_allelic.10readsInput_filtered_epsilon0.3_sharedhet.txt",
+                          "/gpfs/commons/home/dmeyer/bindingQTL_share/24a-hNIP-c9-tdp/allelic/24a-hNIP-c9-tdp_input_deduped_allelic.10readsInput_filtered_epsilon0.3_sharedhet.txt")
+
+donors <- c('CTRL-NEUHE723FGT-02545-G', 'CASE-NEUFV237VCZ-01369-G', 'CTRL-NEUHE723FGT-02545-G', 'CASE-NEUFV237VCZ-01369-G')
+rbps = c("24a-hNIL-control-tdp", "24a-hNIL-c9-tdp", "24a-hNIP-control-tdp", "24a-hNIP-c9-tdp")
+bqtls_beta_files <- paste0(dirname(filtered_input_files),'/',
+                          rbps,
+                          '_beta_10readsInput_filtered_epsilon0.3_ipreads30_allhet_struct_with_peaks.tsv.gz')
+```
+
+For each sample we want to compare the allelic ratio before versus after duplication (in peaks and outside of peaks)
+```{r}
+
+```
+
